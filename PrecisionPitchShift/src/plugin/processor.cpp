@@ -218,16 +218,21 @@ tresult PLUGIN_API Processor::process(ProcessData& data) {
 }
 
 // --- State (program-agnostic, forward-compatible byte stream) ---
+// Layout: v[5] doubles (source, target, reserved, reserved, ceiling),
+//         q[3] int32 (quality, autogain, bypass). The controller parses the
+// identical layout in setComponentState (required by the Steinberg
+// BypassPersistence validator test: bypass must round-trip presets).
 tresult PLUGIN_API Processor::setState(IBStream* state) {
     if (!state) return kResultFalse;
     double v[5] = {sourceHz_, targetHz_, 0.0, 0.0, ceilingDb_};
-    int32 q[2] = {quality_, autoGain_ ? 1 : 0};
+    int32 q[3] = {quality_, autoGain_ ? 1 : 0, bypass_ ? 1 : 0};
     state->read(v, sizeof(v), nullptr);
     state->read(q, sizeof(q), nullptr);
     if (v[0] >= params::kFreqMin && v[0] <= params::kFreqMax) sourceHz_ = v[0];
     if (v[1] >= params::kFreqMin && v[1] <= params::kFreqMax) targetHz_ = v[1];
     if (q[0] == 0 || q[0] == 1) quality_ = q[0];
     autoGain_ = (q[1] != 0);
+    bypass_ = (q[2] != 0);
     if (v[4] >= params::kCeilingMinDb && v[4] <= params::kCeilingMaxDb) {
         ceilingDb_ = v[4];
         gain_.setCeilingDb(ceilingDb_);
@@ -239,7 +244,7 @@ tresult PLUGIN_API Processor::setState(IBStream* state) {
 tresult PLUGIN_API Processor::getState(IBStream* state) {
     if (!state) return kResultFalse;
     double v[5] = {sourceHz_, targetHz_, 0.0, 0.0, ceilingDb_};
-    int32 q[2] = {quality_, autoGain_ ? 1 : 0};
+    int32 q[3] = {quality_, autoGain_ ? 1 : 0, bypass_ ? 1 : 0};
     state->write(v, sizeof(v), nullptr);
     state->write(q, sizeof(q), nullptr);
     return kResultOk;

@@ -87,16 +87,36 @@ IPlugView* PLUGIN_API Controller::createView(FIDString name) {
 tresult PLUGIN_API Controller::setComponentState(IBStream* state) {
     if (!state) return kResultFalse;
     double v[5] = {0, 0, 0, 0, 0};
-    int32 q[2] = {0, 0};
+    int32 q[3] = {0, 0, 0}; // quality, autogain, bypass (see Processor state)
     if (state->read(v, sizeof(v), nullptr) != kResultOk) return kResultFalse;
     if (state->read(q, sizeof(q), nullptr) != kResultOk) return kResultFalse;
     setParamNormalized(params::kSourceFreq, params::freqToNorm(v[0]));
     setParamNormalized(params::kTargetFreq, params::freqToNorm(v[1]));
     setParamNormalized(params::kQuality, q[0] ? 1.0 : 0.0);
     setParamNormalized(params::kAutoGain, q[1] ? 1.0 : 0.0);
+    setParamNormalized(params::kBypassId, q[2] ? 1.0 : 0.0);
     setParamNormalized(params::kCeilingDb, params::ceilingToNorm(v[4]));
     setParamNormalized(params::kFactorInfo,
                        params::factorToNorm(params::factor(v[0], v[1])));
+    return kResultOk;
+}
+
+// Controller-only state (UI-agnostic version tag; all DSP state travels in
+// the component state above). Returning kResultOk (instead of the base
+// kNotImplemented) keeps host preset save/load working end to end.
+tresult PLUGIN_API Controller::setState(IBStream* state) {
+    if (!state) return kResultFalse;
+    int32 version = 0;
+    if (state->read(&version, sizeof(version), nullptr) != kResultOk)
+        return kResultFalse;
+    return kResultOk; // version reserved for future UI settings
+}
+
+tresult PLUGIN_API Controller::getState(IBStream* state) {
+    if (!state) return kResultFalse;
+    int32 version = 1;
+    if (state->write(&version, sizeof(version), nullptr) != kResultOk)
+        return kResultFalse;
     return kResultOk;
 }
 
