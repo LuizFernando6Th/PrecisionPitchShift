@@ -1,0 +1,36 @@
+name: build-vst3
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows-msvc:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (MSVC, Release, SDK via FetchContent)
+        run: cmake -B build -S PrecisionPitchShift -DPPS_VST3_SDK_TAG="v3.7.14_build_55"
+
+      - name: Build plugin + tests
+        run: cmake --build build --config Release
+
+      - name: Run DSP tests
+        working-directory: build
+        run: ctest -C Release --output-on-failure
+
+      - name: Locate .vst3 bundle
+        id: findvst3
+        shell: pwsh
+        run: |
+          $bundle = Get-ChildItem -Recurse -Directory build -Filter "PrecisionPitchShift.vst3" | Select-Object -First 1
+          if (-not $bundle) { Write-Error "bundle .vst3 not found"; exit 1 }
+          echo "path=$($bundle.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload VST3 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrecisionPitchShift-vst3
+          path: ${{ steps.findvst3.outputs.path }}
