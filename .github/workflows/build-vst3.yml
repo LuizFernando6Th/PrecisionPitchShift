@@ -38,3 +38,8 @@ jobs:
           }
           if (-not $bundle) { Write-Error "bundle .vst3 not found"; exit 1 }
           echo "path=$($bundle.FullName)" >> $env:GITHUB_OUTPUT
+      - name: Upload VST3 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrecisionPitchShift-vst3
+          path: ${{ steps.findvst3.outputs.path }}
