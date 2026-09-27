@@ -78,7 +78,8 @@ private:
         std::vector<double> frame, windowed, synthFrame;
         std::vector<std::complex<double>> specA, specS;
         std::vector<double> magA, phaA, trueF, magS, phaS;
-        std::vector<double> scratch; // interpolated-phase scratch for locking
+        std::vector<double> scratch;  // cos table for Dirichlet mapping
+        std::vector<double> scratch2; // sin table for Dirichlet mapping
         std::vector<std::complex<double>> work;
         long long olaPos = 0; // samples consumed from ola into outFifo
     };

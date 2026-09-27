@@ -127,8 +127,9 @@ void PitchEngine::processFrame(Channel& ch, bool transient) {
 
     const bool effTransient = transient && ch.phase.initialized;
     propagateFrame(ch.magA.data(), ch.phaA.data(), ch.trueF.data(),
-                   ch.magS.data(), ch.phaS.data(), guard_.data(), nb, factor_,
-                   hop_, effTransient, ch.phase, cfg_.phaseLock, ch.scratch);
+                   ch.magS.data(), ch.phaS.data(), guard_.data(), nb, fftSize_,
+                   factor_, hop_, effTransient, ch.phase, cfg_.phaseLock,
+                   ch.scratch, ch.scratch2);
     ch.phase.initialized = true;
 
     // Rebuild complex spectrum. DC/Nyquist stay real-positive.
@@ -210,8 +211,8 @@ void PitchEngine::process(const double* const* in, double** out, int numSamples)
             }
             propagateFrame(ch.magA.data(), ch.phaA.data(), ch.trueF.data(),
                            ch.magS.data(), ch.phaS.data(), guard_.data(), nb,
-                           factor_, hop_, transient, ch.phase, cfg_.phaseLock,
-                           ch.scratch);
+                           fftSize_, factor_, hop_, transient, ch.phase,
+                           cfg_.phaseLock, ch.scratch, ch.scratch2);
             ch.phase.initialized = true;
             for (std::size_t k = 0; k < nb; ++k) {
                 if (k == 0 || k == nb - 1)

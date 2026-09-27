@@ -44,25 +44,35 @@ struct PhaseState {
 // Spectral flux (positive part, normalised). Used for transient detection.
 double spectralFlux(const double* mag, const double* prevMag, std::size_t numBins);
 
+// Spectral-mapping taps per side (Lanczos-8 Dirichlet kernel).
+constexpr int kSpectralTaps = 8;
+
 // Advances synthesis phases for one frame.
 //   anaMag/anaPhase : analysis spectrum (N/2+1)
 //   trueFreq        : instantaneous frequency per analysis bin (rad/sample)
 //   outMag/outPhase : synthesis spectrum to fill (N/2+1)
 //   guard           : input-side alias guard (N/2+1)
+//   fftSize         : STFT size (for the Dirichlet phase twist)
 //   factor          : pitch factor Y/X
 //   hop             : hop size in samples
 //   transient       : if true, anchor phases to analysis (attack preserving)
 //   state           : persistent per-channel state (updated in place)
-//   phaseLock       : Engine B — peak-rate locking: each output bin advances
-//                     at the instantaneous rate of the nearest ANALYSIS peak
-//                     instead of its own interpolated rate. Fixes wrapped
-//                     (±frameRate) skirt estimates that otherwise blend into
-//                     spurious side partials (~-19 dB measured without it).
-//   scratchPhase    : scratch buffer (N/2+1), resized as needed
+//   phaseLock       : peak-rate locking: each output bin advances at the
+//                     instantaneous rate of the nearest ANALYSIS peak instead
+//                     of its own interpolated rate (fixes wrapped skirt rates)
+//   cosT/sinT       : scratch buffers (N/2+1), resized as needed
+//
+// Spectral mapping uses a windowed Dirichlet kernel (Lanczos-8 with the
+// causal phase twist), i.e. exact bandlimited interpolation of the complex
+// spectrum. Linear magnitude/phase interpolation is WRONG here: the spectrum
+// oscillates (pi alternation between adjacent bins) faster than the bin
+// spacing, so blending across bins synthesises meaningless mid-values and
+// collapses partials by up to -14 dB at unlucky alignments (measured).
 void propagateFrame(const double* anaMag, const double* anaPhase,
                     const double* trueFreq, double* outMag, double* outPhase,
-                    const double* guard, std::size_t numBins, double factor,
-                    int hop, bool transient, PhaseState& state, bool phaseLock,
-                    std::vector<double>& scratchPhase);
+                    const double* guard, std::size_t numBins, std::size_t fftSize,
+                    double factor, int hop, bool transient, PhaseState& state,
+                    bool phaseLock, std::vector<double>& cosT,
+                    std::vector<double>& sinT);
 
 } // namespace pps
