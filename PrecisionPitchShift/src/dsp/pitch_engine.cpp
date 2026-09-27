@@ -22,6 +22,22 @@ std::size_t suggestedFftSize(double sampleRate, QualityMode q) {
 
 PitchEngine::PitchEngine() = default;
 
+namespace {
+// Median of a small history (copy-based; histories are <= 8 entries).
+double medianOf(const std::vector<double>& v) {
+    if (v.empty()) return 0.0;
+    std::vector<double> s = v;
+    const std::size_t m = s.size() / 2;
+    std::nth_element(s.begin(), s.begin() + m, s.end());
+    double med = s[m];
+    if (s.size() % 2 == 0) {
+        std::nth_element(s.begin(), s.begin() + (m - 1), s.end());
+        med = 0.5 * (med + s[m - 1]);
+    }
+    return med;
+}
+} // namespace
+
 bool PitchEngine::configure(const EngineConfig& cfg) {
     if (cfg.sampleRate <= 0.0 || cfg.numChannels <= 0 || cfg.numChannels > 8)
         return false;
@@ -76,8 +92,8 @@ void PitchEngine::reset() {
     drained_ = 0;
     for (auto& ch : channels_) {
         ch.inFifo.clear();
-        ch.outFifo.clear();
-        std::fill(ch.ola.begin(), ch.ola.end(), 0.0);
+        ch.outFifo.clear();        std::fill(ch.ola.begin(), ch.ola.end(), 0.0);
+        ch.fluxHist.clear();
         const std::size_t nb = fftSize_ / 2 + 1;
         ch.phase.resize(nb);
         ch.olaPos = 0;
@@ -169,7 +185,8 @@ void PitchEngine::process(const double* const* in, double** out, int numSamples)
             if (ch.inFifo.size() < fftSize_) { ready = false; break; }
         if (!ready) break;
 
-        double fluxMax = 0.0, crestMax = 0.0;
+        double crestMax = 0.0;
+        bool fluxTransient = false;
         for (auto& ch : channels_) {
             // Peek magnitudes of the candidate frame for flux estimation.
             for (std::size_t i = 0; i < fftSize_; ++i)
@@ -182,11 +199,26 @@ void PitchEngine::process(const double* const* in, double** out, int numSamples)
             for (std::size_t k = 0; k < nb; ++k) ch.magA[k] = std::abs(ch.specA[k]);
             if (ch.phase.initialized) {
                 const double f = spectralFlux(ch.magA.data(), ch.phase.prevMag.data(), nb);
-                if (f > fluxMax) fluxMax = f;
+                // Adaptive attack gate: absolute floor AND spike above the
+                // local BACKGROUND (median of history). History always grows
+                // (firing frames contribute the background level, never the
+                // spike), so it converges in a few frames even when the
+                // background itself exceeds the floor (busy music): onsets
+                // anchor 2-4 frames while sustain stays out.
+                const double bg = medianOf(ch.fluxHist);
+                const bool chanFire =
+                    (f > cfg_.transientThreshold) &&
+                    (ch.fluxHist.size() < 2 || f > cfg_.transientRatio * bg);
+                if (chanFire) {
+                    fluxTransient = true;
+                    ch.fluxHist.push_back(std::max(bg, cfg_.transientThreshold));
+                } else {
+                    ch.fluxHist.push_back(f);
+                }
+                if (ch.fluxHist.size() > 8) ch.fluxHist.erase(ch.fluxHist.begin());
             }
         }
-        const bool transient = fluxMax > cfg_.transientThreshold ||
-                               crestMax > cfg_.crestThreshold;
+        const bool transient = fluxTransient || crestMax > cfg_.crestThreshold;
         for (auto& ch : channels_) {
             // Consume one hop; the spectrum was already computed above.
             for (std::size_t i = 0; i < fftSize_; ++i) ch.frame[i] = ch.inFifo[i];

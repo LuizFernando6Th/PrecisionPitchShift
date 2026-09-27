@@ -38,7 +38,11 @@ struct EngineConfig {
     int numChannels = 2;
     double factor = 1.0; // Y / X
     QualityMode quality = QualityMode::HighPrecision;
-    double transientThreshold = 0.30; // spectral-flux threshold
+    double transientThreshold = 0.30; // absolute flux floor for attacks
+    double transientRatio = 2.0;      // + must exceed this x median of past
+                                      // BACKGROUND frames (history excludes
+                                      // firing frames, so attacks never
+                                      // desensitize their own tail)
     double crestThreshold = 10.0;     // time-domain crest threshold
     bool phaseLock = true; // peak-rate lock + nearest-phase anchor (Engine B).
                            // Default ON: measured -53 dB spurious (vs -19 dB
@@ -80,6 +84,7 @@ private:
         std::vector<double> magA, phaA, trueF, magS, phaS;
         std::vector<double> scratch;  // cos table for Dirichlet mapping
         std::vector<double> scratch2; // sin table for Dirichlet mapping
+        std::vector<double> fluxHist; // past spectral-flux values (adaptive)
         std::vector<std::complex<double>> work;
         long long olaPos = 0; // samples consumed from ola into outFifo
     };
