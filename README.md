@@ -37,7 +37,7 @@ diagnóstico em `tools/python/analyze.py`.
 
 ## 2. Algoritmo escolhido e justificativa (decidido por medição)
 
-**Vocoder de fase com peak-rate locking + ancoragem por vizinho mais próximo
+**Vocoder de fase com mapeamento espectral de Dirichlet + peak-rate locking
 (“Engine B”, padrão ligado).** Parâmetros por taxa do host:
 
 | Fs do host | FFT (High Precision) | Hop | Latência (= N) |
@@ -70,14 +70,20 @@ Alternativas avaliadas e **rejeitadas por medição** (ver `TEST_REPORT.md`):
 
 O que o Engine B faz (tudo medido antes/depois):
 
-1. **Peak-rate locking**: cada bin de saída avança na taxa do pico de
+1. **Mapeamento espectral de Dirichlet** (Lanczos-8 com phase twist causal):
+   interpolação bandlimited EXATA do espectro complexo, em vez de interpolação
+   linear de magnitude/fase. Linear é matematicamente errado aqui: o espectro
+   oscila (alternância π entre bins adjacentes) mais rápido que o espaçamento
+   dos bins — interpolar através disso gerava valores sem sentido e colapsos
+   de nível de até **−14 dB** conforme o alinhamento (seno de 660 Hz → 0.19×;
+   varredura 200–2000 Hz: níveis 0.54–1.10×). Com Dirichlet: **0.87–1.00×**
+   (pico verdadeiro 0.998–1.000×, independente do alinhamento) — crítico para
+   guitarra/voz com vibrato, onde o alinhamento varre continuamente (sem isso,
+   o vibrato vira tremolo áspero: "phaser").
+2. **Peak-rate locking**: cada bin de saída avança na taxa do pico de
    **análise** mais próximo (picos = centros de parciais, onde a estimativa
    é inequívoca; picos exigem ≥6 dB de contraste — ripples de sidelobe não
-   viram guias). Espúrios: **−19 dB → −53 dB**; balanço estéreo preservado.
-2. **Ancoragem por vizinho mais próximo**: a fase de referência usa o bin de
-   análise mais próximo, nunca interpolada — interpolar fase através da
-   alternância π entre bins adjacentes gerava fase sem sentido e colapsos de
-   −14 dB (ex.: seno de 660 Hz → 0.19×; depois da correção → 0.95×).
+   viram guias). Espúrios: **−19 dB → −64 dB**; balanço estéreo preservado.
 3. **Detecção de transiente dupla** (fluxo espectral positivo OU crest no
    domínio do tempo > 10): o fluxo perde o lado de decaimento do impulso
    dentro da janela; o crest (~√N para impulsos isolados, ~2–3 para tons)
@@ -92,13 +98,20 @@ dobrado para dentro da banda); tudo interno em `float64`.
 
 | Parâmetro | Faixa | Padrão |
 |---|---|---|
-| Frequência de Origem X | 100–1000 Hz (0.01 Hz) | 440.00 Hz |
-| Frequência de Destino Y | 100–1000 Hz (0.01 Hz) | 444.00 Hz |
-| Pitch Factor (somente leitura) | Y/X, 9 casas | 1.009090909 |
-| Processing | High Precision / Efficient | High Precision |
-| Auto Gain Protection | On/Off | On |
-| Ceiling | −6.0 … −0.1 dBFS | −1.0 dBFS |
+| Frequencia de Origem X | 100–1000 Hz (0.01 Hz) | 440.00 Hz |
+| Frequencia de Destino Y | 100–1000 Hz (0.01 Hz) | 444.00 Hz |
+| Fator de Tom (somente leitura) | Y/X, 9 casas | 1.009090909 |
+| Processamento | Alta Precisao / Eficiente | Alta Precisao |
+| Protecao de Ganho Automatica | Ligado/Desligado | Ligado |
+| Teto | −6.0 … −0.1 dBFS | −1.0 dBFS |
 | Bypass | — | Off |
+
+Nomes e rótulos em PT-BR (o Audacity exibe os textos do plugin como estão).
+Valores numéricos são expostos sem unidade (o host anexa "Hz"/"dBFS"
+sozinho). Entrada de texto digitada (quando o host oferece) aceita vírgula
+decimal. Caixas de texto + sliders lado a lado, como no Compressor nativo,
+só seriam possíveis com um editor customizado (VSTGUI) — a UI genérica do
+Audacity para VST3 desenha apenas sliders/caixinhas; ver §7.7.
 
 A taxa do host aparece apenas como informação (o motor sempre usa `Fs_host`).
 Sem autotune, sem detecção de tom, sem correção de formantes: transformação
