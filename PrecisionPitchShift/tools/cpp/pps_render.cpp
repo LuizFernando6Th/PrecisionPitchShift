@@ -120,7 +120,7 @@ int main(int argc, char** argv) {
         st.resize(nb);
         std::vector<std::complex<double>> spec(nb), work;
         std::vector<double> frame(N), wframe(N), mag(nb), pha(nb), tru(nb),
-                            magS(nb), phaS(nb), prevSyn(nb, 0.0), scratch;
+                            magS(nb), phaS(nb), prevSyn(nb, 0.0), scratch, scratchB;
         pps::PhaseState pst;
         pst.resize(nb);
         // Source/target only affect factor for the synthesis replication.
@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
         pps::computeAliasGuard(dguard, N, dumpFactor);
         FILE* f = std::fopen(a.dumpOut.c_str(), "w");
         if (!f) { std::fprintf(stderr, "cannot open dump output\n"); return 1; }
-        std::fprintf(f, "frame,bin,mag,trueHz,synHz\n");
+        std::fprintf(f, "frame,bin,mag,trueHz,synHz,anaPha,synPha\n");
         const std::size_t n = af.channels[0].size();
         int dumped = 0;
         for (std::size_t off = 0; off + N <= n && dumped < a.dumpFrames; off += H, ++dumped) {
@@ -149,22 +149,21 @@ int main(int argc, char** argv) {
                                              nb, N, H);
             }
             for (int k = a.dumpK0; k <= a.dumpK1 && k >= 0; ++k)
-                std::fprintf(f, "%d,%d,%.6f,%.4f,%.4f\n", dumped, k, mag[k],
-                             tru[k] * af.sampleRate / pps::kTwoPi, 0.0);
+                std::fprintf(f, "%d,%d,%.6f,%.4f,%.4f,%.4f,%.4f\n", dumped, k, mag[k],
+                             tru[k] * af.sampleRate / pps::kTwoPi, 0.0,
+                             pha[static_cast<std::size_t>(k)], 0.0);
             // Replicate synthesis to record the actually applied advance rate.
             pps::propagateFrame(mag.data(), pha.data(), tru.data(), magS.data(),
-                                phaS.data(), dguard.data(), nb, dumpFactor, H, false,
-                                pst, true, scratch);
+                                phaS.data(), dguard.data(), nb, N, dumpFactor, H,
+                                false, pst, true, scratch, scratchB);
             pst.initialized = true;
             if (dumped > 0) {
                 for (int k = a.dumpK0; k <= a.dumpK1 && k >= 0; ++k) {
-                    // Synthesis phases accumulate monotonically (no modulo),
-                    // so the raw difference is the true applied advance.
                     const double adv = (phaS[k] - prevSyn[k]) /
                                        static_cast<double>(H) * af.sampleRate /
                                        pps::kTwoPi;
-                    std::fprintf(f, "%d,syn%d,%.6f,%.4f,%.4f\n", dumped, k, magS[k],
-                                 0.0, adv);
+                    std::fprintf(f, "%d,syn%d,%.6f,%.4f,%.4f,%.4f,%.4f\n", dumped, k, magS[k],
+                                 0.0, adv, 0.0, phaS[k]);
                 }
             }
             for (std::size_t k = 0; k < nb; ++k) prevSyn[k] = phaS[k];
