@@ -30,22 +30,32 @@ inline double wrapPi(double x) {
 struct PhaseState {
     std::vector<double> prevAnalysis; // N/2+1
     std::vector<double> synthesis;    // N/2+1
-    std::vector<double> prevMag;      // N/2+1 (for flux / transient detect)
+    std::vector<double> prevMag;      // N/2+1 (per-bin attack decisions)
     bool initialized = false;
+    std::size_t anchoredBins = 0; // bins anchored in the last propagate call
 
     void resize(std::size_t numBins) {
         prevAnalysis.assign(numBins, 0.0);
         synthesis.assign(numBins, 0.0);
         prevMag.assign(numBins, 0.0);
         initialized = false;
+        anchoredBins = 0;
     }
 };
 
-// Spectral flux (positive part, normalised). Used for transient detection.
-double spectralFlux(const double* mag, const double* prevMag, std::size_t numBins);
-
 // Spectral-mapping taps per side (Lanczos-8 Dirichlet kernel).
 constexpr int kSpectralTaps = 8;
+
+// Per-bin attack anchoring: anchor bin k only when it carries significant
+// NEW energy — magnitude above an absolute floor (relative to frame peak)
+// AND grown by kAttackRatio vs the previous frame — or when the frame is
+// globally impulsive (crestFire). Sustained partials (stable mags) keep
+// propagating even through drum hits: re-anchoring them all on every hit
+// kicks their phases several times per second (audible chorus/phaser on
+// guitar and voice with dense mixes — measured). Noise-floor bins (tiny
+// magnitudes fluctuating wildly in ratio) are excluded by the floor.
+constexpr double kAttackRatio = 2.5;
+constexpr double kAbsFloorRel = 1e-4; // -80 dB relative to frame peak
 
 // Advances synthesis phases for one frame.
 //   anaMag/anaPhase : analysis spectrum (N/2+1)
@@ -55,8 +65,10 @@ constexpr int kSpectralTaps = 8;
 //   fftSize         : STFT size (for the Dirichlet phase twist)
 //   factor          : pitch factor Y/X
 //   hop             : hop size in samples
-//   transient       : if true, anchor phases to analysis (attack preserving)
-//   state           : persistent per-channel state (updated in place)
+//   crestFire       : whole frame is impulsive: anchor all bins (attacks win
+//                     over sustain; masked content underneath is inaudible)
+//   state           : persistent per-channel state (updated in place;
+//                     prevMag drives per-bin attack decisions)
 //   phaseLock       : peak-rate locking: each output bin advances at the
 //                     instantaneous rate of the nearest ANALYSIS peak instead
 //                     of its own interpolated rate (fixes wrapped skirt rates)
@@ -71,7 +83,7 @@ constexpr int kSpectralTaps = 8;
 void propagateFrame(const double* anaMag, const double* anaPhase,
                     const double* trueFreq, double* outMag, double* outPhase,
                     const double* guard, std::size_t numBins, std::size_t fftSize,
-                    double factor, int hop, bool transient, PhaseState& state,
+                    double factor, int hop, bool crestFire, PhaseState& state,
                     bool phaseLock, std::vector<double>& cosT,
                     std::vector<double>& sinT);
 

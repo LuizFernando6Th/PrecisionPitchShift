@@ -22,21 +22,8 @@ std::size_t suggestedFftSize(double sampleRate, QualityMode q) {
 
 PitchEngine::PitchEngine() = default;
 
-namespace {
-// Median of a small history (copy-based; histories are <= 8 entries).
-double medianOf(const std::vector<double>& v) {
-    if (v.empty()) return 0.0;
-    std::vector<double> s = v;
-    const std::size_t m = s.size() / 2;
-    std::nth_element(s.begin(), s.begin() + m, s.end());
-    double med = s[m];
-    if (s.size() % 2 == 0) {
-        std::nth_element(s.begin(), s.begin() + (m - 1), s.end());
-        med = 0.5 * (med + s[m - 1]);
-    }
-    return med;
-}
-} // namespace
+// (Transient attack handling is per-bin inside propagateFrame;
+// no global flux gate or history is needed.)
 
 bool PitchEngine::configure(const EngineConfig& cfg) {
     if (cfg.sampleRate <= 0.0 || cfg.numChannels <= 0 || cfg.numChannels > 8)
@@ -93,7 +80,6 @@ void PitchEngine::reset() {
     for (auto& ch : channels_) {
         ch.inFifo.clear();
         ch.outFifo.clear();        std::fill(ch.ola.begin(), ch.ola.end(), 0.0);
-        ch.fluxHist.clear();
         const std::size_t nb = fftSize_ / 2 + 1;
         ch.phase.resize(nb);
         ch.olaPos = 0;
@@ -118,7 +104,7 @@ bool PitchEngine::takeFrame(Channel& ch) {
     return true;
 }
 
-void PitchEngine::processFrame(Channel& ch, bool transient) {
+void PitchEngine::processFrame(Channel& ch, bool crestFire) {
     const std::size_t nb = fftSize_ / 2 + 1;
     for (std::size_t i = 0; i < fftSize_; ++i)
         ch.windowed[i] = ch.frame[i] * window_[i];
@@ -141,10 +127,9 @@ void PitchEngine::processFrame(Channel& ch, bool transient) {
                                 ch.trueF.data(), nb, fftSize_, hop_);
     }
 
-    const bool effTransient = transient && ch.phase.initialized;
     propagateFrame(ch.magA.data(), ch.phaA.data(), ch.trueF.data(),
                    ch.magS.data(), ch.phaS.data(), guard_.data(), nb, fftSize_,
-                   factor_, hop_, effTransient, ch.phase, cfg_.phaseLock,
+                   factor_, hop_, crestFire, ch.phase, cfg_.phaseLock,
                    ch.scratch, ch.scratch2);
     ch.phase.initialized = true;
 
@@ -186,9 +171,9 @@ void PitchEngine::process(const double* const* in, double** out, int numSamples)
         if (!ready) break;
 
         double crestMax = 0.0;
-        bool fluxTransient = false;
         for (auto& ch : channels_) {
-            // Peek magnitudes of the candidate frame for flux estimation.
+            // Peek magnitudes of the candidate frame (also feeds per-bin
+            // attack decisions inside propagateFrame via prevMag history).
             for (std::size_t i = 0; i < fftSize_; ++i)
                 ch.frame[i] = ch.inFifo[i];
             for (std::size_t i = 0; i < fftSize_; ++i)
@@ -197,28 +182,12 @@ void PitchEngine::process(const double* const* in, double** out, int numSamples)
             rfft(ch.windowed.data(), ch.specA.data(), fftSize_, ch.work);
             const std::size_t nb = fftSize_ / 2 + 1;
             for (std::size_t k = 0; k < nb; ++k) ch.magA[k] = std::abs(ch.specA[k]);
-            if (ch.phase.initialized) {
-                const double f = spectralFlux(ch.magA.data(), ch.phase.prevMag.data(), nb);
-                // Adaptive attack gate: absolute floor AND spike above the
-                // local BACKGROUND (median of history). History always grows
-                // (firing frames contribute the background level, never the
-                // spike), so it converges in a few frames even when the
-                // background itself exceeds the floor (busy music): onsets
-                // anchor 2-4 frames while sustain stays out.
-                const double bg = medianOf(ch.fluxHist);
-                const bool chanFire =
-                    (f > cfg_.transientThreshold) &&
-                    (ch.fluxHist.size() < 2 || f > cfg_.transientRatio * bg);
-                if (chanFire) {
-                    fluxTransient = true;
-                    ch.fluxHist.push_back(std::max(bg, cfg_.transientThreshold));
-                } else {
-                    ch.fluxHist.push_back(f);
-                }
-                if (ch.fluxHist.size() > 8) ch.fluxHist.erase(ch.fluxHist.begin());
-            }
         }
-        const bool transient = fluxTransient || crestMax > cfg_.crestThreshold;
+        // Globally impulsive frames (isolated clicks) anchor every bin;
+        // all other attack handling is per-bin inside propagateFrame, so
+        // sustained partials are never phase-kicked by drum hits.
+        const bool crestFire = crestMax > cfg_.crestThreshold;
+        bool frameAnchored = crestFire;
         for (auto& ch : channels_) {
             // Consume one hop; the spectrum was already computed above.
             for (std::size_t i = 0; i < fftSize_; ++i) ch.frame[i] = ch.inFifo[i];
@@ -243,9 +212,10 @@ void PitchEngine::process(const double* const* in, double** out, int numSamples)
             }
             propagateFrame(ch.magA.data(), ch.phaA.data(), ch.trueF.data(),
                            ch.magS.data(), ch.phaS.data(), guard_.data(), nb,
-                           fftSize_, factor_, hop_, transient, ch.phase,
+                           fftSize_, factor_, hop_, crestFire, ch.phase,
                            cfg_.phaseLock, ch.scratch, ch.scratch2);
             ch.phase.initialized = true;
+            if (ch.phase.anchoredBins > 0) frameAnchored = true;
             for (std::size_t k = 0; k < nb; ++k) {
                 if (k == 0 || k == nb - 1)
                     ch.specS[k] = std::complex<double>(ch.magS[k], 0.0);
@@ -261,7 +231,11 @@ void PitchEngine::process(const double* const* in, double** out, int numSamples)
             ch.ola.resize(fftSize_, 0.0);
             ch.phase.prevAnalysis = ch.phaA;
             ch.phase.prevMag = ch.magA;
+            dbgAnchoredBins_ += static_cast<long long>(ch.phase.anchoredBins);
+            dbgTotalBins_ += static_cast<long long>(nb);
         }
+        ++dbgFrames_;
+        if (frameAnchored) ++dbgTransient_;
     }
 
     // 2) Drain output FIFOs with an EXACT, block-size-independent latency of
