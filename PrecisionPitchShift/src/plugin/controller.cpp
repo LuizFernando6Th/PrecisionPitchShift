@@ -9,6 +9,7 @@
 #include "public.sdk/source/vst/vstparameters.h"
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace pps {
@@ -22,46 +23,52 @@ tresult PLUGIN_API Controller::initialize(FUnknown* context) {
     tresult r = EditController::initialize(context);
     if (r != kResultOk) return r;
 
+    // NOTE: títulos e rótulos em PT-BR (o Audacity exibe os textos do plugin
+    // como estão; não há tradução automática). Valores numéricos são
+    // retornados SEM unidade (getParamStringByValue): o host anexa a unidade
+    // sozinho — incluir unidade no texto duplica ("440,00 Hz Hz").
     parameters.addParameter(
-        new RangeParameter(STR16("Source Frequency"), params::kSourceFreq, STR16("Hz"),
+        new RangeParameter(STR16("Frequencia de Origem"), params::kSourceFreq, STR16("Hz"),
                            params::freqToNorm(params::kFreqMin),
                            params::freqToNorm(params::kFreqMax),
                            params::freqToNorm(params::kSourceDefault), 0,
                            ParameterInfo::kCanAutomate, kRootUnitId));
 
     parameters.addParameter(
-        new RangeParameter(STR16("Target Frequency"), params::kTargetFreq, STR16("Hz"),
+        new RangeParameter(STR16("Frequencia de Destino"), params::kTargetFreq, STR16("Hz"),
                            params::freqToNorm(params::kFreqMin),
                            params::freqToNorm(params::kFreqMax),
                            params::freqToNorm(params::kTargetDefault), 0,
                            ParameterInfo::kCanAutomate, kRootUnitId));
 
     RangeParameter* factorInfo = new RangeParameter(
-        STR16("Pitch Factor"), params::kFactorInfo, STR16("x"), 0.0, 1.0,
+        STR16("Fator de Tom"), params::kFactorInfo, STR16("x"), 0.0, 1.0,
         params::factorToNorm(params::factor(params::kSourceDefault,
                                             params::kTargetDefault)),
         0, ParameterInfo::kIsReadOnly, kRootUnitId);
     parameters.addParameter(factorInfo);
 
     auto* qualityParam = new StringListParameter(
-        STR16("Processing"), params::kQuality, nullptr,
+        STR16("Processamento"), params::kQuality, nullptr,
         ParameterInfo::kCanAutomate | ParameterInfo::kIsList, kRootUnitId);
     {
         String128 s;
-        UString(s, 128).fromAscii("High Precision");
+        UString(s, 128).fromAscii("Alta Precisao");
         qualityParam->appendString(s);
-        UString(s, 128).fromAscii("Efficient");
+        UString(s, 128).fromAscii("Eficiente");
         qualityParam->appendString(s);
     }
     parameters.addParameter(qualityParam);
 
+    // stepCount 1 = discreto {0,1}: o host mostra seletor em vez de slider
+    // contínuo (o Bypass, também binário, já aparece como caixinha).
     parameters.addParameter(
-        new RangeParameter(STR16("Auto Gain Protection"), params::kAutoGain, nullptr,
-                           0.0, 1.0, 1.0, 0, ParameterInfo::kCanAutomate,
+        new RangeParameter(STR16("Protecao de Ganho Automatica"), params::kAutoGain, nullptr,
+                           0.0, 1.0, 1.0, 1, ParameterInfo::kCanAutomate,
                            kRootUnitId));
 
     parameters.addParameter(
-        new RangeParameter(STR16("Ceiling"), params::kCeilingDb, STR16("dBFS"),
+        new RangeParameter(STR16("Teto"), params::kCeilingDb, STR16("dBFS"),
                            params::ceilingToNorm(params::kCeilingMinDb),
                            params::ceilingToNorm(params::kCeilingMaxDb),
                            params::ceilingToNorm(params::kCeilingDefaultDb), 0,
@@ -127,7 +134,7 @@ tresult PLUGIN_API Controller::getParamStringByValue(ParamID tag,
     switch (tag) {
         case params::kSourceFreq:
         case params::kTargetFreq:
-            std::snprintf(buf, sizeof(buf), "%.2f Hz", params::freqFromNorm(valueNormalized));
+            std::snprintf(buf, sizeof(buf), "%.2f", params::freqFromNorm(valueNormalized));
             break;
         case params::kFactorInfo:
             std::snprintf(buf, sizeof(buf), "%.9f",
@@ -135,14 +142,17 @@ tresult PLUGIN_API Controller::getParamStringByValue(ParamID tag,
             break;
         case params::kQuality:
             std::snprintf(buf, sizeof(buf), "%s",
-                          valueNormalized > 0.5 ? "Efficient" : "High Precision");
+                          valueNormalized > 0.5 ? "Eficiente" : "Alta Precisao");
             break;
         case params::kAutoGain:
-            std::snprintf(buf, sizeof(buf), "%s", valueNormalized > 0.5 ? "On" : "Off");
+            std::snprintf(buf, sizeof(buf), "%s", valueNormalized > 0.5 ? "Ligado" : "Desligado");
             break;
         case params::kCeilingDb:
-            std::snprintf(buf, sizeof(buf), "%.1f dBFS",
+            std::snprintf(buf, sizeof(buf), "%.1f",
                           params::ceilingFromNorm(valueNormalized));
+            break;
+        case params::kBypassId:
+            std::snprintf(buf, sizeof(buf), "%s", valueNormalized > 0.5 ? "Ligado" : "Desligado");
             break;
         default:
             return EditController::getParamStringByValue(tag, valueNormalized, string);
@@ -155,9 +165,29 @@ tresult PLUGIN_API Controller::getParamStringByValue(ParamID tag,
 tresult PLUGIN_API Controller::getParamValueByString(ParamID tag, TChar* string,
                                                      ParamValue& valueNormalized) {
     if (!string) return kResultFalse;
-    UString128 s(string, 128);
+    UString s(string, 128);
     char buf[64] = {0};
     s.toAscii(buf, sizeof(buf));
+    // Aceita vírgula decimal PT-BR ("440,01") além do ponto.
+    for (char* p = buf; *p; ++p)
+        if (*p == ',') *p = '.';
+    // Rótulos PT-BR (qualidade / chaves).
+    if (tag == params::kQuality) {
+        if (std::strstr(buf, "Efic") != nullptr) { valueNormalized = 1.0; return kResultTrue; }
+        if (std::strstr(buf, "Alta") != nullptr) { valueNormalized = 0.0; return kResultTrue; }
+        return kResultFalse;
+    }
+    if (tag == params::kAutoGain || tag == params::kBypassId) {
+        if (std::strstr(buf, "Lig") != nullptr || std::strcmp(buf, "1") == 0) {
+            valueNormalized = 1.0;
+            return kResultTrue;
+        }
+        if (std::strstr(buf, "Des") != nullptr || std::strcmp(buf, "0") == 0) {
+            valueNormalized = 0.0;
+            return kResultTrue;
+        }
+        return kResultFalse;
+    }
     double v = 0.0;
     if (std::sscanf(buf, "%lf", &v) != 1) return kResultFalse;
     switch (tag) {
