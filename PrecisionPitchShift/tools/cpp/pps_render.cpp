@@ -33,6 +33,7 @@ struct Args {
     int depth = 32;
     int fft = 0;
     std::string window = "hann";
+    bool countTransients = false;
     // Diagnostic dump: --dump-bins k0,k1 --dump-frames N --dump-out file.csv
     // Writes per-frame analysis (mag + estimated true frequency) for bins
     // [k0..k1] of channel 0. No pitch shifting; for validating estimators.
@@ -67,6 +68,7 @@ bool parse(int argc, char** argv, Args& a) {
         else if (k == "--depth") { if (!need(v)) return false; a.depth = std::stoi(v); }
         else if (k == "--fft") { if (!need(v)) return false; a.fft = std::stoi(v); }
         else if (k == "--window") { if (!need(a.window)) return false; }
+        else if (k == "--count-transients") { a.countTransients = true; }
         else if (k == "--dump-bins") {
             if (!need(v)) return false;
             const std::size_t c = v.find(',');
@@ -239,5 +241,13 @@ int main(int argc, char** argv) {
                 "latency %zu, peak %.4f, gain %.4f\n",
                 a.source, a.target, cfg.factor, af.sampleRate, af.numChannels, n,
                 eng.latencySamples(), gp.peakMax(), gp.currentGain());
+    if (a.countTransients)
+        std::fprintf(stderr,
+                     "frames with anchored bins: %lld / %lld (%.1f%%); "
+                     "anchored bins: %lld / %lld (%.2f%%)\n",
+                     eng.dbgTransient(), eng.dbgFrames(),
+                     100.0 * eng.dbgTransient() / (eng.dbgFrames() ? eng.dbgFrames() : 1),
+                     eng.dbgAnchoredBins(), eng.dbgTotalBins(),
+                     100.0 * eng.dbgAnchoredBins() / (eng.dbgTotalBins() ? eng.dbgTotalBins() : 1));
     return 0;
 }
