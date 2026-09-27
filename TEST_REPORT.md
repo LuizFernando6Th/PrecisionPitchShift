@@ -42,9 +42,10 @@ Stack 440 Hz ×10 parciais → 444: pior parcial com **0.59 cents** de erro
 
 ## Teste D — transientes
 
-Impulso unitário 440→444 @48 k: resposta finita, pico 0.304, **drift −13
-amostras** (0.27 ms) após compensação de latência; energia contida em
-~±500 amostras. Sem NaN/inf, sem duplicação.
+Impulso unitário 440→444 @48 k: resposta finita, pico 0.369, **drift +14
+amostras** (0.29 ms) após compensação de latência; energia contida.
+Ancoragem seletiva: em mix denso real, só 4.36% dos bins re-ancoram
+(ataques); sustain propaga sem chutes de fase.
 
 ## Teste E — taxas + estéreo
 
@@ -63,7 +64,7 @@ amostras** (0.27 ms) após compensação de latência; energia contida em
 |---|---|---|
 | Espúrios (tol. 25 Hz, seno) | −18.7 dB @428.5 Hz | **−63.7 dB** |
 | Nível vs. alinhamento (senos 200–2000 Hz) | 0.54–1.10× | **0.87–1.00×** (pico verdadeiro 0.998–1.000×) |
-| AM induzida em vibrato (5.5 Hz, ±25 cents) | n/d (severa por construção) | **1.42%** (−37 dB) |
+| AM induzida em vibrato (5.5 Hz, ±25 cents) | n/d (severa por construção) | **0.85%** (−41 dB) |
 | Precisão de pitch | <0.05 cents | <0.06 cents (inalterada) |
 | Balanço estéreo | −2.05→−0.03 dB (quebra) | −2.05→−2.07 dB (ok) |
 

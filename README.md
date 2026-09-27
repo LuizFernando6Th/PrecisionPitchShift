@@ -84,11 +84,14 @@ O que o Engine B faz (tudo medido antes/depois):
    **análise** mais próximo (picos = centros de parciais, onde a estimativa
    é inequívoca; picos exigem ≥6 dB de contraste — ripples de sidelobe não
    viram guias). Espúrios: **−19 dB → −64 dB**; balanço estéreo preservado.
-3. **Detecção de transiente dupla** (fluxo espectral positivo OU crest no
-   domínio do tempo > 10): o fluxo perde o lado de decaimento do impulso
-   dentro da janela; o crest (~√N para impulsos isolados, ~2–3 para tons)
-   captura ambos os lados. Frames transientes re-ancoram fases (preserva
-   ataque; smear medido: pico a −13 amostras, resposta contida em ~±500).
+3. **Ancoragem de ataque seletiva por bin**: só bins com energia NOVA
+   (acima de −80 dB do pico do frame E crescidos >2.5× ante o frame anterior)
+   re-ancoram fase; todo o resto propaga. Moldura global impulsiva (crest
+   > 10, cliques isolados) ancora tudo. Por quê: re-ancorar TODOS os bins a
+   cada bateria chutava a fase das parciais sustentadas 4×/segundo (coro /
+   "phaser" audível em guitarra e voz em mixes densos — diagnosticado num
+   caso real: 94% dos frames ancorando). Medido em mix denso: só 4.36% dos
+   bins ancoram; ataques continuam nítidos (impulso: pico a +14 amostras).
 
 `Fs_processing = Fs_host` sempre; limite = `Fs/2`; conteúdo que excederia
 Nyquist após o shift é descartado com fade raised-cosine suave (nunca
@@ -221,6 +224,9 @@ pps_render --in in.wav --dump-bins 30,48 --dump-frames 8 --dump-out bins.csv   :
   objetivas estão completas; escuta crítica documentada é o próximo passo.
 * Build final do bundle `.vst3` + teste de carga no Audacity em máquina com
   MSVC (aqui: validado até objetos + configure; link requer MSVC).
+* Confronto medido contra o **SBSMS** (modo "alta qualidade" do Audacity):
+  o comparativo atual (`COMPARACAO.md`) cobre o SoundTouch (modo padrão);
+  falta o rival mais forte.
 * Interpolação cúbica de magnitude (ganho potencial de ~1 dB em picos de
   lóbulo com `frac` desfavorável; risco baixo, não priorizado).
 * Teste com vibrato/chorus denso para calibrar falsos positivos do detector
