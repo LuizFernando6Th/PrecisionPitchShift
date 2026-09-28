@@ -1,101 +1,85 @@
-# TEST_REPORT — resultados medidos (nada aqui é inventado)
+# TEST_REPORT — revisão de engenharia local
 
-Ambiente da medição: Windows x64, Python 3.12 + numpy 2.5.2 / scipy 1.18.1,
-núcleo DSP compilado com `g++ -O2` (MinGW/UCRT), mesmos fontes do plugin.
-Logs integrais: `tests/python/results/cpp_tests.log` e `py_suite.log`;
-artefatos visuais: `tests/python/results/*.png`, `*_bands.md`.
+Este relatório descreve somente resultados que foram reexecutados no pacote desta revisão. Resultados históricos de versões anteriores não são reapresentados como se fossem medições atuais.
 
-**Placar final: C++ 30/30, Python 36/36.**
+## Escopo desta revisão
 
-## Teste A — senos (pitch absoluto)
+Foram aplicadas correções em:
 
-| Par X→Y | Esperado | Medido @48 kHz | Erro |
-|---|---|---|---|
-| 440→444 | 444.000 | 444.010 | 0.010 Hz |
-| 432→440 | 440.000 | 439.989 | 0.011 Hz |
-| 440→442 | 442.000 | 442.003 | 0.003 Hz |
-| 442→444 | 444.000 | 444.010 | 0.010 Hz |
-| 444→432 | 432.000 | 431.991 | 0.009 Hz |
-| 415→440 | 440.000 | 439.989 | 0.011 Hz |
-| 440→415 | 415.000 | 414.990 | 0.010 Hz |
+- rastreamento temporal/hysteresis do pico-guia do phase locking;
+- integração trapezoidal da taxa de fase entre frames para shifts não-unity;
+- ring buffers de capacidade fixa no caminho DSP;
+- scratch buffers e lista de picos pré-alocados;
+- remoção de `vector::erase(begin())` e outras alocações evitáveis no callback DSP;
+- limites X/Y coerentes com `factor` de 0,1 a 10;
+- mudança de fator sem reset artificial da fase acumulada;
+- proteção de ganho desligada por padrão;
+- `pps_render --autogain on` convertido em render de duas passagens com ganho global fixo;
+- parâmetros não marcados como automatizáveis sem implementação sample-accurate;
+- validação de falhas de leitura/escrita do estado VST3;
+- identificação do produto/URL do plugin;
+- guard anti-aliasing reduzido de 5% para 1% da grade espectral;
+- documentação e checker simples de realtime safety.
 
-440→444 por taxa: 44.1k: 443.991 · 48k: 444.010 · 88.2k: 443.990 ·
-96k: 444.012 · 176.4k: 443.990 · 192k: 443.978 (erro ≤ 0.023 Hz em todas).
+## Resultado atual
 
-## Teste B — harmônicos (mesma razão Y/X em todas as parciais)
+### Testes C++
 
-Stack 440 Hz ×10 parciais → 444: pior parcial com **0.59 cents** de erro
-(48 e 96 kHz). Espúrios (tol. 6 Hz): **−55.1 dB** @48 kHz e 96 kHz
-(referência estável no teste C++ com tol. 25 Hz: −63.7 dB).
+Os 34/34 testes do alvo `pps_dsp_tests` passaram na build final da revisão.
 
-## Teste C — sweep até Nyquist + preservação > 20 kHz
+Incluem:
 
-* Duração preservada amostra-exata em 48/96/192 kHz.
-* Tons ultrassônicos exatos: 20 k→20181.8, 30 k→30272.7, 40 k→40363.6 @96 k;
-  20/30/60 k exatos @192 kHz (60 k→60545.5 Hz).
-* Banda 20–30 kHz preservada (delta de energia +4.3 dB @96/192 k —
-  positivo por concentração espectral do shift, sem corte).
-* Top-octave sem foldback (≤ −159 dB de conteúdo anômalo).
-* Tabela de bandas 0–96 kHz: `sweep192_bands.md`; espectrogramas
-  `sweep192_gram_{ref,proc}.png` mostram energia até Nyquist sem degrau em
-  20 kHz (linha ciano é só referência visual).
+- senos em múltiplos fatores X→Y;
+- harmônicos;
+- sweep/tons acima de 20 kHz;
+- transientes;
+- múltiplas taxas de amostragem;
+- estéreo;
+- round-trip;
+- regressão de sideband na taxa de frame.
 
-## Teste D — transientes
+### Sanitizers
 
-Impulso unitário 440→444 @48 k: resposta finita, pico 0.369, **drift +14
-amostras** (0.29 ms) após compensação de latência; energia contida.
-Ancoragem seletiva: em mix denso real, só 4.36% dos bins re-ancoram
-(ataques); sustain propaga sem chutes de fase.
+A build instrumentada com AddressSanitizer e UndefinedBehaviorSanitizer também passou os 34/34 testes DSP na revisão desta branch.
 
-## Teste E — taxas + estéreo
+### Realtime safety
 
-* Todas as 6 taxas processadas na taxa nativa (`Fs_proc = Fs_host`).
-* Entrada diótica → saídas L/R **bit-idênticas** (diff 0.00e+00).
-* Balanço L/R de programa (−2.05 dB) preservado (−2.07 dB).
+`tools/python/check_realtime_safety.py` passou. O check é estático e não substitui teste de alocação/runtime sob host real.
 
-## Teste F — roundtrip 440→444→440
+### Regressão frame-rate
 
-48 kHz: f0 final 440.020 Hz (**0.08 cents**). 192 kHz: 440.039 Hz
-(**0.15 cents**). Dano cumulativo de duas passadas ≈ desprezível.
+O teste sintético usa:
 
-## Comparativo Engine A × B (decisão documentada)
+- `Fs = 192000 Hz`
+- `FFT = 16384`
+- `hop = 4096`
+- fator `444/440`
+- componente vibratória de 440 Hz, `5,5 Hz`, `±25 cents`
+- componente próxima a 454 Hz
 
-| Métrica (stack 440→444 @48 k) | Engine A (livre) | Engine B (padrão atual) |
-|---|---|---|
-| Espúrios (tol. 25 Hz, seno) | −18.7 dB @428.5 Hz | **−63.7 dB** |
-| Nível vs. alinhamento (senos 200–2000 Hz) | 0.54–1.10× | **0.87–1.00×** (pico verdadeiro 0.998–1.000×) |
-| AM induzida em vibrato (5.5 Hz, ±25 cents) | n/d (severa por construção) | **0.85%** (−41 dB) |
-| Precisão de pitch | <0.05 cents | <0.06 cents (inalterada) |
-| Balanço estéreo | −2.05→−0.03 dB (quebra) | −2.05→−2.07 dB (ok) |
+A taxa de frame é exatamente:
 
-Rejeitados também: phase-locking absoluto (−8.7 dB + colapso de nível) e
-janela Blackman-Harris (−11 dB). Causas-raiz quantificadas no README §2.
+`192000 / 4096 = 46,875 Hz`.
 
-## Modos de processamento @48 kHz (2 s mono)
+Na versão anterior desta revisão, a métrica combinada do teste estava em aproximadamente `-26,0 dBc`. Após rastreamento temporal do guia + integração trapezoidal da taxa de fase, ficou em aproximadamente `-29,5 dBc` sob a mesma métrica, uma melhora de aproximadamente `3,5 dB`.
 
-High Precision (N=4096): 0.35 s · latência 4096 · spur −55.1 dB.
-Efficient (N=2048): 0.26 s · latência 2048 · spur −48.2 dB (modo Efficient
-medido antes do mapeamento Dirichlet; beneficia-se do mesmo código).
-(≈6×/8× mais rápido que tempo real no hardware de teste; uma faixa estéreo
-de 3.5 min a 192 kHz renderiza em ~6 min — offline, aceitável.)
+Isso é uma regressão sintética; não é uma garantia de eliminação do efeito em um mix rock real. O guia-switch count permanece apenas diagnóstico, pois uma métrica global `switches / assignments` é contaminada pelas fronteiras móveis de influência dos picos e não representa qualidade perceptual de forma confiável.
 
-## Validação do código VST3
+## Limitações de validação
 
-* `processor.cpp`, `controller.cpp`, `factory.cpp`, `editor.cpp`: compilação
-  limpa (`exit 0`, zero erros) contra os **headers reais do VST3 SDK
-  v3.7.14** — 3 bugs reais foram encontrados e corrigidos por essa via
-  (`setLatencySamples` inexistente → overrides `getLatencySamples/
-  getTailSamples`; `DiscreteParameter` inexistente → `StringListParameter`;
-  `UString128` usado como wrapper → `UString`).
-* `cmake -B build_vst3 -DPPS_VST3_SDK_DIR=...`: **configure OK** com o SDK.
-* Link final do bundle requer **MSVC** (o SDK 3.7.14 não linka integralmente
-  no MinGW por pendências próprias: `std::aligned_alloc` ausente em
-  `dataexchange.cpp`, falha de link do `validator`) — sem relação com este
-  código; toolchain alvo documentada no README.
-* Núcleo DSP/CLI/testes: build + `ctest` **30/30** via CMake.
+O pacote original fornecido para esta revisão não continha a suíte Python histórica referenciada em versões anteriores do `TEST_REPORT.md`. Portanto, os números históricos de `C++ 30/30 + Python 36/36` não foram tratados como reproduzidos.
 
-## O que NÃO foi medido (declarado)
+Também não foi feito um confronto auditivo formal MUSHRA com várias pessoas.
 
-Escuta formal cega (MUSHRA) em material musical real variado; apenas
-fixturas sintéticas + stack “musicish” estéreo. O comparador
-`tools/python/analyze.py` está pronto para material do usuário.
+O bundle VST3 final não foi linkado neste ambiente porque o SDK/toolchain alvo de Windows/MSVC não está disponível aqui. O código-fonte do wrapper VST3 permanece no pacote e o CMake documenta o build com SDK local.
+
+## Próxima validação necessária
+
+Para fechar a questão do "phaser/eco", renderizar o mesmo mix rock real a 192 kHz por dois caminhos usando exatamente o mesmo `PitchEngine`:
+
+1. `pps_render` offline;
+2. Audacity → VST3 → WAV.
+
+Medir em ambos as parciais relevantes e os componentes em `±46,875 Hz`, mantendo Auto Gain desligado.
+
+Gate recomendado para a correção atual: redução mínima de 12 dB nos sidebands atribuíveis à modulação frame-rate em relação à baseline anterior, sem aumento do erro de pitch acima de 0,05 Hz e sem perda do vibrato fundamental.

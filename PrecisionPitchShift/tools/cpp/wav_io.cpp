@@ -20,9 +20,6 @@ void wr16(std::vector<uint8_t>& v, uint16_t x) {
 void wr32(std::vector<uint8_t>& v, uint32_t x) {
     for (int i = 0; i < 4; ++i) v.push_back(static_cast<uint8_t>((x >> (8 * i)) & 0xFF));
 }
-void wr64(std::vector<uint8_t>& v, uint64_t x) {
-    for (int i = 0; i < 8; ++i) v.push_back(static_cast<uint8_t>((x >> (8 * i)) & 0xFF));
-}
 
 } // namespace
 

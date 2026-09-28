@@ -24,7 +24,7 @@ namespace pps {
 // fadeFraction: width of the raised-cosine transition as a fraction of
 //               numBins (default 0.05). Set 0 for a hard edge (not advised).
 void computeAliasGuard(std::vector<double>& gains, std::size_t fftSize,
-                       double factor, double fadeFraction = 0.05);
+                       double factor, double fadeFraction = 0.01);
 
 // Returns the highest input frequency (Hz) that survives the shift.
 // Returns Nyquist when factor <= 1.

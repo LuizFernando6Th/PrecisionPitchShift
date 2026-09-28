@@ -5,8 +5,8 @@
 #include "plugin/controller.h"
 
 #define PPS_VENDOR "PrecisionPitchShift"
-#define PPS_URL "https://github.com/anomalyco/opencode"
-#define PPS_EMAIL "support@example.invalid"
+#define PPS_URL "https://github.com/LuizFernando6Th/PrecisionPitchShift"
+#define PPS_EMAIL ""
 
 BEGIN_FACTORY_DEF(PPS_VENDOR, PPS_URL, PPS_EMAIL)
 

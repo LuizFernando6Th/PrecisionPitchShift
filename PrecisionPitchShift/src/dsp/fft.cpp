@@ -52,7 +52,7 @@ void fft(std::complex<double>* data, std::size_t n, bool forward) {
 
 void rfft(const double* in, std::complex<double>* out, std::size_t n,
           std::vector<std::complex<double>>& work) {
-    work.resize(n);
+    if (work.size() < n) work.resize(n);
     for (std::size_t i = 0; i < n; ++i) work[i] = std::complex<double>(in[i], 0.0);
     fft(work.data(), n, true);
     for (std::size_t k = 0; k <= n / 2; ++k) out[k] = work[k];
@@ -60,7 +60,7 @@ void rfft(const double* in, std::complex<double>* out, std::size_t n,
 
 void rifft(const std::complex<double>* in, double* out, std::size_t n,
            std::vector<std::complex<double>>& work) {
-    work.resize(n);
+    if (work.size() < n) work.resize(n);
     work[0] = std::complex<double>(in[0].real(), 0.0);
     for (std::size_t k = 1; k < n / 2; ++k) work[k] = in[k];
     work[n / 2] = std::complex<double>(in[n / 2].real(), 0.0);

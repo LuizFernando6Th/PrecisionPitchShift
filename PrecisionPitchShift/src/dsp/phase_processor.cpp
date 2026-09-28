@@ -2,6 +2,7 @@
 #include "phase_processor.h"
 
 #include <cmath>
+#include <cassert>
 
 namespace pps {
 
@@ -18,8 +19,14 @@ void propagateFrame(const double* anaMag, const double* anaPhase,
     // Peak-rate locking defers phase advance to the lock block below (which
     // advances each NON-ANCHORED bin at its peak's rate).
     const bool lockActive = phaseLock && wasInit && numBins >= 3;
-    if (cosT.size() != numBins) cosT.assign(numBins, 1.0);
-    if (sinT.size() != numBins) sinT.assign(numBins, 0.0);
+    assert(cosT.size() == numBins && sinT.size() == numBins);
+    assert(state.anchored.size() == numBins &&
+           state.peaks.size() >= (numBins + 1) / 2);
+    if (cosT.size() != numBins || sinT.size() != numBins ||
+        state.anchored.size() != numBins ||
+        state.peaks.size() < (numBins + 1) / 2) {
+        return;
+    }
     double framePeak = 0.0;
     for (std::size_t k = 0; k < numBins; ++k) {
         cosT[k] = std::cos(anaPhase[k]);
@@ -30,7 +37,9 @@ void propagateFrame(const double* anaMag, const double* anaPhase,
     constexpr double kPi = 3.14159265358979323846;
     const double twistK = kPi * static_cast<double>(fftSize - 1) /
                           static_cast<double>(fftSize);
-    std::vector<char> anchored(numBins, 0);
+    std::fill(state.anchored.begin(), state.anchored.end(), 0);
+    state.peakCount = 0;
+    state.guideSwitches = 0;
     std::size_t nAnchored = 0;
 
     for (std::size_t k = 0; k < numBins; ++k) {
@@ -94,10 +103,24 @@ void propagateFrame(const double* anaMag, const double* anaPhase,
         }
         if (anchor) {
             state.synthesis[k] = ph;
-            anchored[k] = 1;
+            state.anchored[k] = 1;
             ++nAnchored;
         } else if (!lockActive) {
-            state.synthesis[k] += tf * hd;
+            // Integrate the instantaneous-frequency trajectory with a
+            // trapezoidal step instead of holding the current rate constant
+            // for the whole hop. This suppresses hop-rate FM on vibrato while
+            // preserving the same phase endpoint for a stationary tone.
+            const double stepRate =
+                (std::fabs(factor - 1.0) < 1e-12)
+                    ? tf
+                    : (state.prevRateValid[k]
+                           ? 0.5 * (state.prevRate[k] + tf)
+                           : tf);
+            state.synthesis[k] += stepRate * hd;
+        }
+        if (!lockActive) {
+            state.prevRate[k] = tf;
+            state.prevRateValid[k] = 1;
         }
         outPhase[k] = state.synthesis[k];
     }
@@ -111,11 +134,8 @@ void propagateFrame(const double* anaMag, const double* anaPhase,
     // estimates are unambiguous), while magnitudes/anchors come from
     // Dirichlet mapping.
     if (lockActive) {
-        // 1) analysis peaks: local maxima with >=6 dB contrast over the
-        // surrounding +-3 bins (rejects sidelobe ripples, whose wrapped
-        // rates would otherwise become guides for nearby bins).
-        std::vector<std::size_t> peaks;
-        peaks.reserve(64);
+        // 1) Analysis peaks: local maxima with >=6 dB contrast over the
+        // surrounding +-3 bins (rejects sidelobe ripples).
         for (std::size_t k = 1; k + 1 < numBins; ++k) {
             if (!(anaMag[k] >= anaMag[k - 1] && anaMag[k] > anaMag[k + 1])) continue;
             if (anaMag[k] <= 1e-9) continue;
@@ -124,23 +144,91 @@ void propagateFrame(const double* anaMag, const double* anaPhase,
                 if (k >= static_cast<std::size_t>(d)) vmin = std::min(vmin, anaMag[k - d]);
                 if (k + d < numBins) vmin = std::min(vmin, anaMag[k + d]);
             }
-            if (anaMag[k] >= 2.0 * vmin) peaks.push_back(k);
+            if (anaMag[k] >= 2.0 * vmin &&
+                state.peakCount < state.peaks.size())
+                state.peaks[state.peakCount++] = k;
         }
-        if (!peaks.empty()) {
-            // 2) influence-region boundaries at midpoints between peaks.
-            // Anchored bins (fresh attack energy) keep their anchor.
+        if (state.peakCount > 0) {
+            // 2) Temporally track the nearest current peak instead of making
+            // a memoryless nearest-peak decision. A partial with vibrato can
+            // move across one or more FFT bins; switching guides merely because
+            // the geometric nearest bin changed creates frame-rate phase FM.
+            // Hysteresis: retain a tracked peak while it remains within 2 bins
+            // of its previous location, within 0.75 bin of the best geometric
+            // candidate, and no more than 6 dB weaker.
+            constexpr double kTrackMaxBins = 2.0;
+            constexpr double kSwitchMarginBins = 0.75;
+            constexpr double kKeepMinMagRatio = 0.5;
+
             for (std::size_t k = 1; k + 1 < numBins; ++k) {
-                if (anchored[k]) continue;
+                if (state.anchored[k]) continue;
                 const double j = static_cast<double>(k) * invFactor;
                 if (j > lastBin) continue;
-                // Nearest peak in source coordinates (linear scan; few peaks).
-                std::size_t best = peaks[0];
+
+                std::size_t best = state.peaks[0];
                 double bestD = std::fabs(j - static_cast<double>(best));
-                for (std::size_t p = 1; p < peaks.size(); ++p) {
-                    const double d = std::fabs(j - static_cast<double>(peaks[p]));
-                    if (d < bestD) { bestD = d; best = peaks[p]; }
+                for (std::size_t p = 1; p < state.peakCount; ++p) {
+                    const double d = std::fabs(j - static_cast<double>(state.peaks[p]));
+                    if (d < bestD) { bestD = d; best = state.peaks[p]; }
                 }
-                state.synthesis[k] += trueFreq[best] * factor * hd;
+
+                std::size_t guide = best;
+                const int previous = state.guidePeak[k];
+                if (previous >= 0 && previous < static_cast<int>(numBins)) {
+                    std::size_t tracked = state.peaks[0];
+                    double trackedMove = std::fabs(static_cast<double>(tracked) -
+                                                   static_cast<double>(previous));
+                    for (std::size_t p = 1; p < state.peakCount; ++p) {
+                        const double move = std::fabs(static_cast<double>(state.peaks[p]) -
+                                                      static_cast<double>(previous));
+                        if (move < trackedMove) {
+                            trackedMove = move;
+                            tracked = state.peaks[p];
+                        }
+                    }
+
+                    const double trackedD =
+                        std::fabs(j - static_cast<double>(tracked));
+                    const double bestMag = anaMag[best];
+                    const double trackedMag = anaMag[tracked];
+                    const bool sameTrack =
+                        trackedMove <= kTrackMaxBins &&
+                        trackedD <= bestD + kSwitchMarginBins &&
+                        trackedMag >= kKeepMinMagRatio * bestMag;
+                    if (sameTrack) guide = tracked;
+                }
+
+                if (previous >= 0 && guide != static_cast<std::size_t>(previous))
+                    ++state.guideSwitches;
+                state.guidePeak[k] = static_cast<int>(guide);
+                const double currentRate = trueFreq[guide] * factor;
+                const double stepRate =
+                    (std::fabs(factor - 1.0) < 1e-12)
+                        ? currentRate
+                        : (state.prevRateValid[k]
+                               ? 0.5 * (state.prevRate[k] + currentRate)
+                               : currentRate);
+                state.synthesis[k] += stepRate * hd;
+                state.prevRate[k] = currentRate;
+                state.prevRateValid[k] = 1;
+                outPhase[k] = state.synthesis[k];
+            }
+        } else {
+            // No trustworthy analysis peak exists: fall back to the regular
+            // rate estimate rather than freezing phase.
+            for (std::size_t k = 0; k < numBins; ++k) {
+                if (state.anchored[k]) {
+                    state.prevRate[k] = (trueFreq[k] * factor);
+                    state.prevRateValid[k] = 1;
+                    continue;
+                }
+                const double currentRate = trueFreq[k] * factor;
+                const double stepRate = state.prevRateValid[k]
+                                            ? 0.5 * (state.prevRate[k] + currentRate)
+                                            : currentRate;
+                state.synthesis[k] += stepRate * hd;
+                state.prevRate[k] = currentRate;
+                state.prevRateValid[k] = 1;
                 outPhase[k] = state.synthesis[k];
             }
         }

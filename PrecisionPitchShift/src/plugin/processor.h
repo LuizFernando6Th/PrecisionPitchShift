@@ -54,7 +54,7 @@ protected:
     double targetHz_ = 444.0;
     double lastReportedFactor_ = -1.0;
     int quality_ = 0; // 0 High Precision, 1 Efficient
-    bool autoGain_ = true;
+    bool autoGain_ = false;
     double ceilingDb_ = -1.0;
     bool bypass_ = false;
     bool engineReady_ = false;
@@ -68,6 +68,7 @@ protected:
     std::vector<const double*> inPtrs_;
     std::vector<double*> outPtrs_;
     std::vector<const double*> obsPtrs_; // for GainProtection::observe
+    std::size_t maxBlockSize_ = 8192;
 };
 
 } // namespace pps

@@ -1,4 +1,4 @@
-// PrecisionPitchShift — VST3 parameter definitions (shared political-neutral
+// PrecisionPitchShift — VST3 parameter definitions (shared host-neutral
 // mapping between Processor and Controller).
 //
 // Primary UI: Source Frequency X (Hz) and Target Frequency Y (Hz).
@@ -20,7 +20,7 @@ enum Id : ParamID {
     kQuality = 103,    // 0 = High Precision, 1 = Efficient
     kAutoGain = 104,   // 0/1
     kCeilingDb = 105,  // dBFS ceiling, -6.0 .. -0.1
-    kBypassId = 'bypa'
+    kBypassId = 0x62797061u
 };
 
 // Frequency parameter range (Hz). Wide enough for baroque pitch (415 Hz),
@@ -57,14 +57,14 @@ inline double ceilingToNorm(double db) {
     if (n > 1.0) n = 1.0;
     return n;
 }
-// Read-only factor display maps [0.5 .. 2.0] onto [0..1].
+// Read-only factor display maps [0.1 .. 10.0] onto [0..1].
 inline double factorToNorm(double f) {
-    double n = (f - 0.5) / 1.5;
+    double n = (f - 0.1) / 9.9;
     if (n < 0.0) n = 0.0;
     if (n > 1.0) n = 1.0;
     return n;
 }
-inline double factorFromNorm(double n) { return 0.5 + n * 1.5; }
+inline double factorFromNorm(double n) { return 0.1 + n * 9.9; }
 
 inline double factor(double sourceHz, double targetHz) {
     return (sourceHz > 0.0) ? targetHz / sourceHz : 1.0;

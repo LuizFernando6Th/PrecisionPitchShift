@@ -116,6 +116,10 @@ int main() {
         check(survivingInputBandwidth(48000.0, 444.0 / 440.0) < 24000.0 &&
                   survivingInputBandwidth(48000.0, 0.5) == 24000.0,
               "surviving bandwidth");
+        EngineConfig extreme{48000.0, 1, 10.0, QualityMode::HighPrecision};
+        extreme.maxBlockSize = 512;
+        check(extreme.factor <= 10.0 && PitchEngine().configure(extreme),
+              "factor range 0.1..10");
     }
 
     // --- 4. FFT size policy ----------------------------------------------
@@ -175,7 +179,29 @@ int main() {
         check(allOk, "harmonics ratio", detail);
     }
 
-    // --- 7. Passthrough factor=1 (unity) ----------------------------------
+    // --- 7. Full UI factor envelope (0.1..10) ------------------------------
+    {
+        const double sr = 48000.0;
+        const std::size_t n = static_cast<std::size_t>(sr * 1.0);
+        for (double factor : {0.1, 10.0}) {
+            std::vector<double> in(n);
+            const double src = factor > 1.0 ? 100.0 : 1000.0;
+            analysis::sine(in, src, sr, 0.4);
+            auto out = renderMono(in, sr, factor, 512, true);
+            PitchEngine tmp;
+            EngineConfig cfg{sr, 1, factor, QualityMode::HighPrecision};
+            cfg.maxBlockSize = 512;
+            tmp.configure(cfg);
+            const std::size_t skip = tmp.latencySamples() + static_cast<std::size_t>(sr * 0.25);
+            const double got = analysis::peakFrequency(out.data(), out.size(), sr, skip);
+            const double want = src * factor;
+            std::snprintf(buf, sizeof(buf), "(factor %.1f: %.1f->%.1f Hz, got %.1f)",
+                          factor, src, want, got);
+            check(std::fabs(got - want) < 5.0, "factor envelope sine", buf);
+        }
+    }
+
+    // --- 8. Passthrough factor=1 (unity) ----------------------------------
     {
         const double sr = 48000.0;
         std::vector<double> in(static_cast<std::size_t>(sr * 1.0));
@@ -192,7 +218,7 @@ int main() {
         check(std::fabs(gdb) < 1.0, "passthrough unity", buf);
     }
 
-    // --- 8. Transients (Teste D) -------------------------------------------
+    // --- 9. Transients (Teste D) -------------------------------------------
     {
         const double sr = 48000.0;
         const std::size_t n = static_cast<std::size_t>(sr * 1.0);
@@ -218,7 +244,7 @@ int main() {
               "impulse response", buf);
     }
 
-    // --- 9. Stereo coherence ------------------------------------------------
+    // --- 10. Stereo coherence ------------------------------------------------
     {
         const double sr = 48000.0;
         std::vector<double> mono(static_cast<std::size_t>(sr * 1.0));
@@ -231,7 +257,7 @@ int main() {
         check(dmax < 1e-9, "stereo identical-in identical-out", buf);
     }
 
-    // --- 10. Duration preserved ----------------------------------------------
+    // --- 11. Duration preserved ----------------------------------------------
     {
         const double sr = 96000.0;
         std::vector<double> in(static_cast<std::size_t>(sr * 3.0));
@@ -241,7 +267,7 @@ int main() {
         check(out.size() == in.size(), "duration preserved", buf);
     }
 
-    // --- 11. High-rate + above-20kHz preservation (Teste C/E) -----------------
+    // --- 12. High-rate + above-20kHz preservation (Teste C/E -----------------
     {
         const double sr = 192000.0, f = 444.0 / 440.0;
         // 30 kHz content must survive an upward shift (maps to ~30.27 kHz).
@@ -270,7 +296,7 @@ int main() {
         check(spur < -20.0, "no foldback aliasing @192k", buf);
     }
 
-    // --- 12. Round trip 440->444->440 (Teste F) --------------------------------
+    // --- 13. Round trip 440->444->440 (Teste F) --------------------------------
     {
         const double sr = 48000.0;
         std::vector<double> in(static_cast<std::size_t>(sr * 2.0));
@@ -287,7 +313,7 @@ int main() {
         check(std::fabs(errCents) < 15.0, "roundtrip pitch", buf);
     }
 
-    // --- 13. Gain protection ---------------------------------------------------
+    // --- 14. Gain protection ---------------------------------------------------
     {
         GainProtection gp(-1.0, 5.0, 48000.0);
         std::vector<double> x(1024, 1.5); // hot block
@@ -301,7 +327,7 @@ int main() {
         check(std::fabs(peak - ceil) < 0.02, "gain ceiling", buf);
     }
 
-    // --- 14. Engine B (peak-rate lock + nearest-phase anchor) ---------------
+    // --- 15. Engine B (peak-rate lock + nearest-phase anchor) ---------------
     {
         const double sr = 48000.0, f = 444.0 / 440.0;
         std::vector<double> in(static_cast<std::size_t>(sr * 2.0));
@@ -331,7 +357,7 @@ int main() {
         check(mOut > 0.5 * mIn, "engineB 660Hz level", buf);
     }
 
-    // --- 15. Engine A regression (phaseLock OFF still functional) ------------
+    // --- 16. Engine A regression (phaseLock OFF still functional ------------
     {
         const double sr = 48000.0, f = 444.0 / 440.0;
         std::vector<double> in(static_cast<std::size_t>(sr * 2.0));
@@ -344,6 +370,50 @@ int main() {
         const double got = analysis::peakFrequency(out.data(), out.size(), sr, skip);
         std::snprintf(buf, sizeof(buf), "(got %.4f Hz)", got);
         check(std::fabs(got - 444.0) < 0.5, "engineA sine pitch", buf);
+    }
+
+
+    // --- 17. Guide tracking / frame-rate modulation regression -------------
+    {
+        const double sr = 192000.0;
+        const double factor = 444.0 / 440.0;
+        const std::size_t n = static_cast<std::size_t>(sr * 4.0);
+        std::vector<double> in(n, 0.0);
+        double phase = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double t = static_cast<double>(i) / sr;
+            const double f = 440.0 * std::exp2(25.0 * std::sin(2.0 * 3.141592653589793 * 5.5 * t) / 1200.0);
+            phase += 2.0 * 3.141592653589793 * f / sr;
+            in[i] = 0.45 * std::sin(phase) + 0.22 * std::sin(2.0 * 3.141592653589793 * 454.0 * t);
+        }
+        PitchEngine tmp;
+        EngineConfig cfg{sr, 1, factor, QualityMode::HighPrecision};
+        cfg.maxBlockSize = 512;
+        tmp.configure(cfg);
+        std::vector<double> out(in.size(), 0.0);
+        const double* ip[1] = {in.data()};
+        double* op[1] = {out.data()};
+        for (std::size_t off = 0; off < in.size(); off += 512) {
+            const int m = static_cast<int>(std::min<std::size_t>(512, in.size() - off));
+            ip[0] = in.data() + off;
+            op[0] = out.data() + off;
+            tmp.process(ip, op, m);
+        }
+        const std::size_t skip = tmp.latencySamples() + static_cast<std::size_t>(sr * 0.5);
+        const double main = analysis::magnitudeNear(out.data(), out.size(), sr, 444.0, skip);
+        const double sb1 = analysis::magnitudeNear(out.data(), out.size(), sr, 444.0 - 46.875, skip);
+        const double sb2 = analysis::magnitudeNear(out.data(), out.size(), sr, 444.0 + 46.875, skip);
+        const double sideDb = 20.0 * std::log10(std::max(sb1, sb2) / (main + 1e-30) + 1e-30);
+        std::snprintf(buf, sizeof(buf), "(frame-rate sideband %.1f dBc, guide switches %lld)",
+                      sideDb, tmp.dbgGuideSwitches());
+        // A broad synthetic can contain natural nearby components, so use a
+        // conservative gate: the pathological frame-rate component must be
+        // below -28 dBc after temporal guide tracking + phase-rate smoothing.
+        // The raw guide-switch count is diagnostic only: as the spectral peak
+        // influence regions move, multiple bins may legitimately change their
+        // nearest guide in a single frame, so a global switch/assignment ratio
+        // is not a meaningful quality metric.
+        check(sideDb < -28.0, "frame-rate sideband regression", buf);
     }
 
     std::printf("\n==== %d passed, %d failed ====\n", g_pass, g_fail);

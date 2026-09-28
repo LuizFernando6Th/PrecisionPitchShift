@@ -28,12 +28,14 @@ PitchEngine::PitchEngine() = default;
 bool PitchEngine::configure(const EngineConfig& cfg) {
     if (cfg.sampleRate <= 0.0 || cfg.numChannels <= 0 || cfg.numChannels > 8)
         return false;
-    if (!(cfg.factor > 0.0) || cfg.factor > 8.0 || cfg.factor < 0.125)
+    if (!(cfg.factor > 0.0) || cfg.factor > 10.0 || cfg.factor < 0.1)
         return false;
+    if (cfg.maxBlockSize == 0) return false;
     cfg_ = cfg;
     sampleRate_ = cfg.sampleRate;
     numChannels_ = cfg.numChannels;
     factor_ = cfg.factor;
+    maxBlockSize_ = cfg.maxBlockSize;
     fftSize_ = cfg.fftSizeOverride >= 1024 && isPowerOfTwo(cfg.fftSizeOverride)
                    ? cfg.fftSizeOverride
                    : suggestedFftSize(sampleRate_, cfg.quality);
@@ -54,8 +56,9 @@ bool PitchEngine::configure(const EngineConfig& cfg) {
     drained_ = 0;
     const std::size_t nb = fftSize_ / 2 + 1;
     for (auto& ch : channels_) {
-        ch.inFifo.clear();
-        ch.outFifo.clear();
+        const std::size_t fifoCapacity = fftSize_ + maxBlockSize_ + static_cast<std::size_t>(hop_) + 16;
+        ch.inFifo.prepare(fifoCapacity);
+        ch.outFifo.prepare(fifoCapacity);
         ch.ola.assign(fftSize_, 0.0);
         ch.phase.resize(nb);
         ch.frame.assign(fftSize_, 0.0);
@@ -68,8 +71,9 @@ bool PitchEngine::configure(const EngineConfig& cfg) {
         ch.trueF.assign(nb, 0.0);
         ch.magS.assign(nb, 0.0);
         ch.phaS.assign(nb, 0.0);
-        ch.work.clear();
-        ch.olaPos = 0;
+        ch.scratch.assign(nb, 1.0);
+        ch.scratch2.assign(nb, 0.0);
+        ch.work.resize(fftSize_);
     }
     return true;
 }
@@ -79,123 +83,56 @@ void PitchEngine::reset() {
     drained_ = 0;
     for (auto& ch : channels_) {
         ch.inFifo.clear();
-        ch.outFifo.clear();        std::fill(ch.ola.begin(), ch.ola.end(), 0.0);
-        const std::size_t nb = fftSize_ / 2 + 1;
-        ch.phase.resize(nb);
-        ch.olaPos = 0;
+        ch.outFifo.clear();
+        std::fill(ch.ola.begin(), ch.ola.end(), 0.0);
+        ch.phase.reset();
     }
 }
 
 void PitchEngine::setFactor(double factor) {
-    if (!(factor > 0.0) || factor > 8.0 || factor < 0.125) return;
+    if (!(factor > 0.0) || factor > 10.0 || factor < 0.1) return;
     factor_ = factor;
     cfg_.factor = factor;
     computeAliasGuard(guard_, fftSize_, factor_);
-    for (auto& ch : channels_) {
-        const std::size_t nb = fftSize_ / 2 + 1;
-        ch.phase.resize(nb); // reset phase continuity on factor change
-    }
+    // Keep accumulated synthesis phase continuous across parameter changes.
+    // The spectral map changes at the next frame, but there is no gratuitous
+    // phase reset/zeroing of the oscillator state.
+
 }
 
-bool PitchEngine::takeFrame(Channel& ch) {
-    if (ch.inFifo.size() < fftSize_) return false;
-    for (std::size_t i = 0; i < fftSize_; ++i) ch.frame[i] = ch.inFifo[i];
-    ch.inFifo.erase(ch.inFifo.begin(), ch.inFifo.begin() + hop_);
-    return true;
-}
+void PitchEngine::processBlock(const double* const* in, double** out, int numSamples) {
+    if (numSamples <= 0) return;
 
-void PitchEngine::processFrame(Channel& ch, bool crestFire) {
-    const std::size_t nb = fftSize_ / 2 + 1;
-    for (std::size_t i = 0; i < fftSize_; ++i)
-        ch.windowed[i] = ch.frame[i] * window_[i];
-
-    rfft(ch.windowed.data(), ch.specA.data(), fftSize_, ch.work);
-    for (std::size_t k = 0; k < nb; ++k) {
-        ch.magA[k] = std::abs(ch.specA[k]);
-        ch.phaA[k] = std::arg(ch.specA[k]);
-    }
-
-    if (!ch.phase.initialized) {
-        for (std::size_t k = 0; k < nb; ++k) {
-            const double omega = kTwoPi * static_cast<double>(k) /
-                                 static_cast<double>(fftSize_);
-            ch.trueF[k] = omega; // centre frequency until 2nd frame
+    for (int n = 0; n < numSamples; ++n) {
+        for (int c = 0; c < numChannels_; ++c) {
+            auto& ch = channels_[static_cast<std::size_t>(c)];
+            (void)ch.inFifo.push(in[c][n]);
         }
-        // Keep initialized==false: propagateFrame() anchors frame 1.
-    } else {
-        estimateTrueFrequencies(ch.phaA.data(), ch.phase.prevAnalysis.data(),
-                                ch.trueF.data(), nb, fftSize_, hop_);
     }
-
-    propagateFrame(ch.magA.data(), ch.phaA.data(), ch.trueF.data(),
-                   ch.magS.data(), ch.phaS.data(), guard_.data(), nb, fftSize_,
-                   factor_, hop_, crestFire, ch.phase, cfg_.phaseLock,
-                   ch.scratch, ch.scratch2);
-    ch.phase.initialized = true;
-
-    // Rebuild complex spectrum. DC/Nyquist stay real-positive.
-    for (std::size_t k = 0; k < nb; ++k) {
-        if (k == 0 || k == nb - 1)
-            ch.specS[k] = std::complex<double>(ch.magS[k], 0.0);
-        else
-            ch.specS[k] = std::polar(ch.magS[k], ch.phaS[k]);
-    }
-    rifft(ch.specS.data(), ch.synthFrame.data(), fftSize_, ch.work);
-
-    for (std::size_t i = 0; i < fftSize_; ++i)
-        ch.ola[i] += ch.synthFrame[i] * window_[i] * olaGain_;
-
-    // Emit one hop of output.
-    for (int i = 0; i < hop_; ++i)
-        ch.outFifo.push_back(ch.ola[static_cast<std::size_t>(i)]);
-    ch.ola.erase(ch.ola.begin(), ch.ola.begin() + hop_);
-    ch.ola.resize(fftSize_, 0.0);
-
-    ch.phase.prevAnalysis = ch.phaA;
-    ch.phase.prevMag = ch.magA;
-}
-
-void PitchEngine::process(const double* const* in, double** out, int numSamples) {
-    if (numSamples <= 0 || channels_.empty()) return;
-    // 1) Append input, run whole frames. Transient decision shared across
-    //    channels (max flux) to keep stereo coherent.
-    for (int n = 0; n < numSamples; ++n)
-        for (int c = 0; c < numChannels_; ++c)
-            channels_[static_cast<std::size_t>(c)].inFifo.push_back(in[c][n]);
     consumed_ += numSamples;
 
     for (;;) {
         bool ready = true;
-        for (auto& ch : channels_)
+        for (auto& ch : channels_) {
             if (ch.inFifo.size() < fftSize_) { ready = false; break; }
+        }
         if (!ready) break;
 
         double crestMax = 0.0;
+        const std::size_t nb = fftSize_ / 2 + 1;
         for (auto& ch : channels_) {
-            // Peek magnitudes of the candidate frame (also feeds per-bin
-            // attack decisions inside propagateFrame via prevMag history).
-            for (std::size_t i = 0; i < fftSize_; ++i)
-                ch.frame[i] = ch.inFifo[i];
+            ch.inFifo.copyFrontTo(ch.frame.data(), fftSize_);
             for (std::size_t i = 0; i < fftSize_; ++i)
                 ch.windowed[i] = ch.frame[i] * window_[i];
             crestMax = std::max(crestMax, timeCrest(ch.windowed.data(), fftSize_));
             rfft(ch.windowed.data(), ch.specA.data(), fftSize_, ch.work);
-            const std::size_t nb = fftSize_ / 2 + 1;
-            for (std::size_t k = 0; k < nb; ++k) ch.magA[k] = std::abs(ch.specA[k]);
+            for (std::size_t k = 0; k < nb; ++k)
+                ch.magA[k] = std::abs(ch.specA[k]);
         }
-        // Globally impulsive frames (isolated clicks) anchor every bin;
-        // all other attack handling is per-bin inside propagateFrame, so
-        // sustained partials are never phase-kicked by drum hits.
         const bool crestFire = crestMax > cfg_.crestThreshold;
-        bool frameAnchored = crestFire;
+
         for (auto& ch : channels_) {
-            // Consume one hop; the spectrum was already computed above.
-            for (std::size_t i = 0; i < fftSize_; ++i) ch.frame[i] = ch.inFifo[i];
-            ch.inFifo.erase(ch.inFifo.begin(), ch.inFifo.begin() + hop_);
-            // Recompute spectrum inside processFrame path: reuse by processing
-            // the already-peeked spectrum. To avoid a second FFT we call the
-            // tail of processFrame manually via cached specA:
-            const std::size_t nb = fftSize_ / 2 + 1;
+            ch.inFifo.popN(static_cast<std::size_t>(hop_));
             for (std::size_t k = 0; k < nb; ++k) {
                 ch.magA[k] = std::abs(ch.specA[k]);
                 ch.phaA[k] = std::arg(ch.specA[k]);
@@ -204,18 +141,17 @@ void PitchEngine::process(const double* const* in, double** out, int numSamples)
                 for (std::size_t k = 0; k < nb; ++k)
                     ch.trueF[k] = kTwoPi * static_cast<double>(k) /
                                   static_cast<double>(fftSize_);
-                // NOTE: keep initialized==false so propagateFrame() ANCHORS
-                // synthesis phases to the analysis phases on the first frame.
             } else {
                 estimateTrueFrequencies(ch.phaA.data(), ch.phase.prevAnalysis.data(),
                                         ch.trueF.data(), nb, fftSize_, hop_);
             }
+
             propagateFrame(ch.magA.data(), ch.phaA.data(), ch.trueF.data(),
                            ch.magS.data(), ch.phaS.data(), guard_.data(), nb,
                            fftSize_, factor_, hop_, crestFire, ch.phase,
                            cfg_.phaseLock, ch.scratch, ch.scratch2);
             ch.phase.initialized = true;
-            if (ch.phase.anchoredBins > 0) frameAnchored = true;
+
             for (std::size_t k = 0; k < nb; ++k) {
                 if (k == 0 || k == nb - 1)
                     ch.specS[k] = std::complex<double>(ch.magS[k], 0.0);
@@ -223,46 +159,57 @@ void PitchEngine::process(const double* const* in, double** out, int numSamples)
                     ch.specS[k] = std::polar(ch.magS[k], ch.phaS[k]);
             }
             rifft(ch.specS.data(), ch.synthFrame.data(), fftSize_, ch.work);
+
             for (std::size_t i = 0; i < fftSize_; ++i)
                 ch.ola[i] += ch.synthFrame[i] * window_[i] * olaGain_;
             for (int i = 0; i < hop_; ++i)
-                ch.outFifo.push_back(ch.ola[static_cast<std::size_t>(i)]);
-            ch.ola.erase(ch.ola.begin(), ch.ola.begin() + hop_);
-            ch.ola.resize(fftSize_, 0.0);
+                (void)ch.outFifo.push(ch.ola[static_cast<std::size_t>(i)]);
+            std::move(ch.ola.begin() + hop_, ch.ola.end(), ch.ola.begin());
+            std::fill(ch.ola.end() - hop_, ch.ola.end(), 0.0);
+
             ch.phase.prevAnalysis = ch.phaA;
             ch.phase.prevMag = ch.magA;
             dbgAnchoredBins_ += static_cast<long long>(ch.phase.anchoredBins);
             dbgTotalBins_ += static_cast<long long>(nb);
+            dbgGuideSwitches_ += static_cast<long long>(ch.phase.guideSwitches);
+            dbgGuideAssignments_ += static_cast<long long>(nb);
         }
         ++dbgFrames_;
-        if (frameAnchored) ++dbgTransient_;
     }
 
-    // 2) Drain output FIFOs with an EXACT, block-size-independent latency of
-    //    N samples: out[N + k*H + i] carries hop k (frame [kH, kH+N)), which
-    //    exists once frame k completed, i.e. consumed >= k*H + N.
-    //    Out[0:N] is startup silence. The host compensates via
-    //    getLatencySamples() == N; the CLI pre-rolls N zeros and trims.
-    //    Trailing tails are flushed by the host (tail samples) or by CLI
-    //    post-roll zeros.
     const long long Nll = static_cast<long long>(fftSize_);
     const long long Hll = static_cast<long long>(hop_);
     for (int n = 0; n < numSamples; ++n) {
         bool release = false;
         if (drained_ >= Nll) {
-            const long long k = (drained_ - Nll) / Hll; // hop index to emit
-            release = consumed_ >= k * Hll + Nll;       // frame k completed
+            const long long k = (drained_ - Nll) / Hll;
+            release = consumed_ >= k * Hll + Nll;
         }
         for (int c = 0; c < numChannels_; ++c) {
             auto& fifo = channels_[static_cast<std::size_t>(c)].outFifo;
             double s = 0.0;
-            if (release && !fifo.empty()) {
-                s = fifo.front();
-                fifo.erase(fifo.begin());
-            }
+            if (release) (void)fifo.pop(s);
             out[c][n] = s;
         }
         ++drained_;
+    }
+}
+
+void PitchEngine::process(const double* const* in, double** out, int numSamples) {
+    if (!in || !out || numSamples <= 0 || channels_.empty()) return;
+
+    int offset = 0;
+    while (offset < numSamples) {
+        const int chunk = static_cast<int>(std::min<std::size_t>(
+            maxBlockSize_, static_cast<std::size_t>(numSamples - offset)));
+        const double* subIn[8] = {};
+        double* subOut[8] = {};
+        for (int c = 0; c < numChannels_; ++c) {
+            subIn[c] = in[c] + offset;
+            subOut[c] = out[c] + offset;
+        }
+        processBlock(subIn, subOut, chunk);
+        offset += chunk;
     }
 }
 

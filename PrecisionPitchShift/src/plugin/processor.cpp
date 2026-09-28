@@ -47,6 +47,9 @@ void Processor::syncEngineFromBuses() {
 
 tresult PLUGIN_API Processor::setupProcessing(ProcessSetup& setup) {
     sampleRate_ = setup.sampleRate > 0.0 ? setup.sampleRate : 48000.0;
+    maxBlockSize_ = setup.maxSamplesPerBlock > 0
+                        ? static_cast<std::size_t>(setup.maxSamplesPerBlock)
+                        : 8192;
     gain_.setSampleRate(sampleRate_);
     syncEngineFromBuses(); // eager: latency valid before first process()
     return AudioEffect::setupProcessing(setup);
@@ -77,24 +80,36 @@ void Processor::syncEngine(int numChannels) {
     cfg.sampleRate = sampleRate_;
     cfg.numChannels = numChannels;
     cfg.factor = f;
+    cfg.maxBlockSize = maxBlockSize_;
     cfg.quality = (quality_ == 1) ? QualityMode::Efficient : QualityMode::HighPrecision;
     const bool needNew = !engineReady_ || engine_.numChannels() != numChannels ||
                          engine_.sampleRate() != sampleRate_ ||
-                         engine_.fftSize() != suggestedFftSize(sampleRate_, cfg.quality);
+                         engine_.fftSize() != suggestedFftSize(sampleRate_, cfg.quality) ||
+                         engine_.maxBlockSize() != maxBlockSize_;
     if (needNew) {
-        engine_.configure(cfg);
+        const bool ok = engine_.configure(cfg);
         gain_.reset();
-        engineReady_ = true;
+        engineReady_ = ok;
+        if (!ok) {
+            latencySamples_ = 0;
+            return;
+        }
         latencySamples_ = static_cast<uint32>(engine_.latencySamples());
     } else if (engine_.factor() != f) {
         engine_.setFactor(f);
     }
+    // All temporary buffers and pointer arrays are prepared here, outside the
+    // realtime processing loop.
+    if (inPtrs_.size() != static_cast<std::size_t>(numChannels))
+        inPtrs_.resize(static_cast<std::size_t>(numChannels));
+    if (outPtrs_.size() != static_cast<std::size_t>(numChannels))
+        outPtrs_.resize(static_cast<std::size_t>(numChannels));
+    if (obsPtrs_.size() != static_cast<std::size_t>(numChannels))
+        obsPtrs_.resize(static_cast<std::size_t>(numChannels));
     for (int c = 0; c < numChannels; ++c) {
-        if (tmpIn_[c].size() < 8192) { tmpIn_[c].resize(8192); tmpOut_[c].resize(8192); }
+        if (tmpIn_[c].size() < maxBlockSize_) tmpIn_[c].resize(maxBlockSize_);
+        if (tmpOut_[c].size() < maxBlockSize_) tmpOut_[c].resize(maxBlockSize_);
     }
-    inPtrs_.resize(static_cast<size_t>(numChannels));
-    outPtrs_.resize(static_cast<size_t>(numChannels));
-    obsPtrs_.resize(static_cast<size_t>(numChannels));
 }
 
 void Processor::readParameterChanges(IParameterChanges* changes) {
@@ -135,6 +150,45 @@ tresult PLUGIN_API Processor::process(ProcessData& data) {
 
     syncEngine(numCh);
     const int N = data.numSamples;
+    if (!engineReady_ || N <= 0) {
+        // Host contract normally guarantees N <= maxSamplesPerBlock. If a host
+        // violates it, fail safe without allocating in the realtime callback.
+        // A transparent copy is preferable to stale/undefined DSP output.
+        if (data.symbolicSampleSize == Vst::kSample32) {
+            for (int c = 0; c < numCh; ++c) {
+                const float* in = inBus.channelBuffers32[c];
+                float* out = outBus.channelBuffers32[c];
+                for (int n = 0; n < N; ++n) out[n] = in[n];
+            }
+        } else {
+            for (int c = 0; c < numCh; ++c) {
+                const double* in = inBus.channelBuffers64[c];
+                double* out = outBus.channelBuffers64[c];
+                for (int n = 0; n < N; ++n) out[n] = in[n];
+            }
+        }
+        outBus.silenceFlags = inBus.silenceFlags;
+        return kResultOk;
+    }
+    if (static_cast<std::size_t>(N) > maxBlockSize_) {
+        // Do not resize temporary buffers from the realtime thread. This is
+        // a defensive fallback for a host violating setupProcessing().
+        if (data.symbolicSampleSize == Vst::kSample32) {
+            for (int c = 0; c < numCh; ++c) {
+                const float* in = inBus.channelBuffers32[c];
+                float* out = outBus.channelBuffers32[c];
+                for (int n = 0; n < N; ++n) out[n] = in[n];
+            }
+        } else {
+            for (int c = 0; c < numCh; ++c) {
+                const double* in = inBus.channelBuffers64[c];
+                double* out = outBus.channelBuffers64[c];
+                for (int n = 0; n < N; ++n) out[n] = in[n];
+            }
+        }
+        outBus.silenceFlags = inBus.silenceFlags;
+        return kResultOk;
+    }
 
     // Report derived factor to the (read-only) info parameter, best effort.
     const double f = params::factor(sourceHz_, targetHz_);
@@ -166,12 +220,9 @@ tresult PLUGIN_API Processor::process(ProcessData& data) {
         return kResultOk;
     }
 
-    // Ensure scratch.
+    // Scratch is fully preallocated in setupProcessing()/syncEngine().
+    // Never resize these vectors from the realtime callback.
     for (int c = 0; c < numCh; ++c) {
-        if (static_cast<int>(tmpIn_[c].size()) < N) {
-            tmpIn_[c].resize(static_cast<size_t>(N));
-            tmpOut_[c].resize(static_cast<size_t>(N));
-        }
         inPtrs_[static_cast<size_t>(c)] = tmpIn_[c].data();
         outPtrs_[static_cast<size_t>(c)] = tmpOut_[c].data();
     }
@@ -226,8 +277,8 @@ tresult PLUGIN_API Processor::setState(IBStream* state) {
     if (!state) return kResultFalse;
     double v[5] = {sourceHz_, targetHz_, 0.0, 0.0, ceilingDb_};
     int32 q[3] = {quality_, autoGain_ ? 1 : 0, bypass_ ? 1 : 0};
-    state->read(v, sizeof(v), nullptr);
-    state->read(q, sizeof(q), nullptr);
+    if (state->read(v, sizeof(v), nullptr) != kResultOk) return kResultFalse;
+    if (state->read(q, sizeof(q), nullptr) != kResultOk) return kResultFalse;
     if (v[0] >= params::kFreqMin && v[0] <= params::kFreqMax) sourceHz_ = v[0];
     if (v[1] >= params::kFreqMin && v[1] <= params::kFreqMax) targetHz_ = v[1];
     if (q[0] == 0 || q[0] == 1) quality_ = q[0];
@@ -245,8 +296,8 @@ tresult PLUGIN_API Processor::getState(IBStream* state) {
     if (!state) return kResultFalse;
     double v[5] = {sourceHz_, targetHz_, 0.0, 0.0, ceilingDb_};
     int32 q[3] = {quality_, autoGain_ ? 1 : 0, bypass_ ? 1 : 0};
-    state->write(v, sizeof(v), nullptr);
-    state->write(q, sizeof(q), nullptr);
+    if (state->write(v, sizeof(v), nullptr) != kResultOk) return kResultFalse;
+    if (state->write(q, sizeof(q), nullptr) != kResultOk) return kResultFalse;
     return kResultOk;
 }
 

@@ -3,7 +3,7 @@
 //
 // Usage:
 //   pps_render --in in.wav --out out.wav --source 440 --target 444
-//              [--quality high|efficient] [--autogain on|off]
+//              [--quality high|efficient] [--autogain on|off] (default off; offline on is global two-pass)
 //              [--ceiling-db -1.0] [--block 512]
 //
 // No resampling is performed: out sample rate == in sample rate, always.
@@ -26,7 +26,7 @@ struct Args {
     std::string in, out;
     double source = 440.0, target = 444.0;
     std::string quality = "high";
-    bool autogain = true;
+    bool autogain = false;
     double ceilingDb = -1.0;
     bool phaselock = true; // default ON (measured best); --phaselock off to compare
     int block = 512;
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
     if (!parse(argc, argv, a)) {
         std::fprintf(stderr,
                      "usage: pps_render --in in.wav --out out.wav --source X --target Y "
-                     "[--quality high|efficient] [--autogain on|off] [--ceiling-db DB] "
+                     "[--quality high|efficient] [--autogain on|off] (default off; offline on is global two-pass) [--ceiling-db DB] "
                      "[--block N] [--depth 16|24|32] [--fft N] [--window hann|bh] "
                      "[--phaselock on|off]\n"
                      "   or: pps_render --in in.wav --dump-bins k0,k1 --dump-frames N "
@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
         st.resize(nb);
         std::vector<std::complex<double>> spec(nb), work;
         std::vector<double> frame(N), wframe(N), mag(nb), pha(nb), tru(nb),
-                            magS(nb), phaS(nb), prevSyn(nb, 0.0), scratch, scratchB;
+                            magS(nb), phaS(nb), prevSyn(nb, 0.0), scratch(nb, 1.0), scratchB(nb, 0.0);
         pps::PhaseState pst;
         pst.resize(nb);
         // Source/target only affect factor for the synthesis replication.
@@ -180,6 +180,7 @@ int main(int argc, char** argv) {
     cfg.sampleRate = af.sampleRate;
     cfg.numChannels = af.numChannels;
     cfg.factor = a.target / a.source;
+    cfg.maxBlockSize = static_cast<std::size_t>(a.block);
     cfg.quality = (a.quality == "efficient") ? pps::QualityMode::Efficient
                                             : pps::QualityMode::HighPrecision;
     cfg.phaseLock = a.phaselock;
@@ -192,47 +193,71 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "engine configure failed\n");
         return 1;
     }
-    pps::GainProtection gp(a.ceilingDb, 5.0, af.sampleRate);
-
-    // Offline correctness: pre-roll P zeros + post-roll P zeros, then trim
-    // starting at L+P (engine lag L plus pre-roll). out_e[t] ~= in_e[t-L]
-    // with in_e[t] = in[t-P], so out[t] = out_e[t+L+P] ~= in[t]: sample-exact
-    // duration AND alignment. Startup zeros are dropped; the input tail is
-    // fully rendered thanks to post-roll flushing the overlap-add.
+    // Offline correctness: pre-roll P zeros + post-roll P zeros, then trim.
     const std::size_t n = af.channels[0].size();
     const std::size_t P = eng.latencySamples();
     const std::size_t L = eng.latencySamples();
-    std::vector<std::vector<double>> buf(af.channels.size());
-    for (int c = 0; c < af.numChannels; ++c) {
-        buf[c].assign(n + 2 * P, 0.0);
-        for (std::size_t i = 0; i < n; ++i) buf[c][P + i] = af.channels[c][i];
-    }
-    std::vector<const double*> ip(static_cast<std::size_t>(af.numChannels));
-    std::vector<double*> op(static_cast<std::size_t>(af.numChannels));
-    const std::size_t nExt = n + 2 * P;
-    for (std::size_t off = 0; off < nExt; off += static_cast<std::size_t>(a.block)) {
-        const int m = static_cast<int>(std::min<std::size_t>(a.block, nExt - off));
-        for (int c = 0; c < af.numChannels; ++c) {
-            ip[static_cast<std::size_t>(c)] = buf[c].data() + off;
-            op[static_cast<std::size_t>(c)] = buf[c].data() + off;
+
+    auto renderOnce = [&](pps::PitchEngine& engine, std::vector<std::vector<double>>& dst,
+                          bool applyGain, double gainValue) {
+        const std::size_t nExt = n + 2 * P;
+        dst.assign(static_cast<std::size_t>(af.numChannels), std::vector<double>(nExt, 0.0));
+        for (int c = 0; c < af.numChannels; ++c)
+            for (std::size_t i = 0; i < n; ++i)
+                dst[static_cast<std::size_t>(c)][P + i] = af.channels[c][i];
+
+        std::vector<const double*> ip(static_cast<std::size_t>(af.numChannels));
+        std::vector<double*> op(static_cast<std::size_t>(af.numChannels));
+        for (std::size_t off = 0; off < nExt; off += static_cast<std::size_t>(a.block)) {
+            const int m = static_cast<int>(std::min<std::size_t>(a.block, nExt - off));
+            for (int c = 0; c < af.numChannels; ++c) {
+                ip[static_cast<std::size_t>(c)] = dst[static_cast<std::size_t>(c)].data() + off;
+                op[static_cast<std::size_t>(c)] = dst[static_cast<std::size_t>(c)].data() + off;
+            }
+            engine.process(ip.data(), op.data(), m);
+            if (applyGain) {
+                for (int c = 0; c < af.numChannels; ++c)
+                    for (int i = 0; i < m; ++i)
+                        op[static_cast<std::size_t>(c)][i] *= gainValue;
+            }
         }
-        // In-place is safe: the engine buffers input before emitting output.
-        // (Reads of in[c][..] all happen before any write to out[c][..].)
-        eng.process(ip.data(),
-                    const_cast<double**>(op.data()), // NOLINT: aliased, safe here
-                    m);
-        if (a.autogain) {
-            // Apply latched protection causally (same as VST3 process()).
-            std::vector<const double*> cp(op.size());
-            for (std::size_t c = 0; c < op.size(); ++c) cp[c] = op[c];
-            gp.observe(cp.data(), af.numChannels, m);
-            gp.apply(op.data(), af.numChannels, m);
+    };
+
+    std::vector<std::vector<double>> rendered;
+    double appliedGain = 1.0;
+
+    if (a.autogain) {
+        // True offline global gain: render once, measure the global peak, then
+        // rerender from a fresh engine and apply one fixed scalar. This avoids
+        // the causal gain pumping of the realtime plugin path.
+        pps::PitchEngine measureEngine;
+        if (!measureEngine.configure(cfg)) {
+            std::fprintf(stderr, "measure engine configure failed\n");
+            return 1;
         }
+        renderOnce(measureEngine, rendered, false, 1.0);
+        double peak = 0.0;
+        for (const auto& ch : rendered)
+            for (double v : ch) peak = std::max(peak, std::fabs(v));
+        const double ceiling = pps::GainProtection::dbToLinear(a.ceilingDb);
+        appliedGain = (peak > ceiling && peak > 0.0) ? ceiling / peak : 1.0;
+        rendered.clear();
+
+        pps::PitchEngine finalEngine;
+        if (!finalEngine.configure(cfg)) {
+            std::fprintf(stderr, "final engine configure failed\n");
+            return 1;
+        }
+        renderOnce(finalEngine, rendered, true, appliedGain);
+        eng = std::move(finalEngine);
+    } else {
+        renderOnce(eng, rendered, false, 1.0);
     }
-    // Trim pre-roll/lag/post-roll back into af (duration preserved exactly).
+
     const std::size_t T = L + P;
     for (int c = 0; c < af.numChannels; ++c)
-        for (std::size_t i = 0; i < n; ++i) af.channels[c][i] = buf[c][T + i];
+        for (std::size_t i = 0; i < n; ++i)
+            af.channels[c][i] = rendered[static_cast<std::size_t>(c)][T + i];
     if (!pps::wav::write(a.out, af, a.depth, err)) {
         std::fprintf(stderr, "write failed: %s\n", err.c_str());
         return 1;
@@ -240,7 +265,7 @@ int main(int argc, char** argv) {
     std::printf("rendered %.6f Hz -> %.6f Hz (factor %.9f) @ %.0f Hz, %d ch, %zu frames, "
                 "latency %zu, peak %.4f, gain %.4f\n",
                 a.source, a.target, cfg.factor, af.sampleRate, af.numChannels, n,
-                eng.latencySamples(), gp.peakMax(), gp.currentGain());
+                eng.latencySamples(), 0.0, appliedGain);
     if (a.countTransients)
         std::fprintf(stderr,
                      "frames with anchored bins: %lld / %lld (%.1f%%); "

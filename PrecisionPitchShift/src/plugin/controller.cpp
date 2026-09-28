@@ -32,14 +32,14 @@ tresult PLUGIN_API Controller::initialize(FUnknown* context) {
                            params::freqToNorm(params::kFreqMin),
                            params::freqToNorm(params::kFreqMax),
                            params::freqToNorm(params::kSourceDefault), 0,
-                           ParameterInfo::kCanAutomate, kRootUnitId));
+                           0, kRootUnitId));
 
     parameters.addParameter(
         new RangeParameter(STR16("Frequencia de Destino"), params::kTargetFreq, STR16("Hz"),
                            params::freqToNorm(params::kFreqMin),
                            params::freqToNorm(params::kFreqMax),
                            params::freqToNorm(params::kTargetDefault), 0,
-                           ParameterInfo::kCanAutomate, kRootUnitId));
+                           0, kRootUnitId));
 
     RangeParameter* factorInfo = new RangeParameter(
         STR16("Fator de Tom"), params::kFactorInfo, STR16("x"), 0.0, 1.0,
@@ -50,7 +50,7 @@ tresult PLUGIN_API Controller::initialize(FUnknown* context) {
 
     auto* qualityParam = new StringListParameter(
         STR16("Processamento"), params::kQuality, nullptr,
-        ParameterInfo::kCanAutomate | ParameterInfo::kIsList, kRootUnitId);
+        ParameterInfo::kIsList, kRootUnitId);
     {
         String128 s;
         UString(s, 128).fromAscii("Alta Precisao");
@@ -64,7 +64,7 @@ tresult PLUGIN_API Controller::initialize(FUnknown* context) {
     // contínuo (o Bypass, também binário, já aparece como caixinha).
     parameters.addParameter(
         new RangeParameter(STR16("Protecao de Ganho Automatica"), params::kAutoGain, nullptr,
-                           0.0, 1.0, 1.0, 1, ParameterInfo::kCanAutomate,
+                           0.0, 1.0, 0.0, 1, 0,
                            kRootUnitId));
 
     parameters.addParameter(
@@ -72,7 +72,7 @@ tresult PLUGIN_API Controller::initialize(FUnknown* context) {
                            params::ceilingToNorm(params::kCeilingMinDb),
                            params::ceilingToNorm(params::kCeilingMaxDb),
                            params::ceilingToNorm(params::kCeilingDefaultDb), 0,
-                           ParameterInfo::kCanAutomate, kRootUnitId));
+                           0, kRootUnitId));
 
     parameters.addParameter(
         STR16("Bypass"), nullptr, 1, 0,

@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "gain_control.h"
+#include "ring_buffer.h"
 #include "phase_processor.h"
 #include "spectral_processor.h"
 
@@ -43,6 +44,7 @@ struct EngineConfig {
     bool phaseLock = true; // peak-rate lock (see phase_processor.h)
     std::size_t fftSizeOverride = 0;  // 0 = automatic per sample rate
     WindowType window = WindowType::Hann;
+    std::size_t maxBlockSize = 8192; // host/CLI block ceiling; used for preallocation
 };
 
 std::size_t suggestedFftSize(double sampleRate, QualityMode q);
@@ -56,6 +58,7 @@ public:
 
     std::size_t latencySamples() const { return fftSize_; }
     std::size_t fftSize() const { return fftSize_; }
+    std::size_t maxBlockSize() const { return maxBlockSize_; }
     int hopSize() const { return hop_; }
     double sampleRate() const { return sampleRate_; }
     int numChannels() const { return numChannels_; }
@@ -73,8 +76,8 @@ public:
 
 private:
     struct Channel {
-        std::vector<double> inFifo;   // pending input samples
-        std::vector<double> outFifo;  // ready output samples
+        RingBuffer inFifo;            // pending input samples
+        RingBuffer outFifo;           // ready output samples
         std::vector<double> ola;      // overlap-add accumulator (fftSize)
         PhaseState phase;
         // Per-frame scratch:
@@ -84,16 +87,15 @@ private:
         std::vector<double> scratch;  // cos table for Dirichlet mapping
         std::vector<double> scratch2; // sin table for Dirichlet mapping
         std::vector<std::complex<double>> work;
-        long long olaPos = 0; // samples consumed from ola into outFifo
     };
 
-    void processFrame(Channel& ch, bool crestFire);
-    bool takeFrame(Channel& ch);
+    void processBlock(const double* const* in, double** out, int numSamples);
 
     EngineConfig cfg_{};
     double sampleRate_ = 48000.0;
     int numChannels_ = 0;
     double factor_ = 1.0;
+    std::size_t maxBlockSize_ = 8192;
     std::size_t fftSize_ = 0;
     int hop_ = 0;
     double olaGain_ = 1.0;
@@ -108,6 +110,12 @@ private:
     long long dbgTransient_ = 0;
     long long dbgAnchoredBins_ = 0;
     long long dbgTotalBins_ = 0;
+    long long dbgGuideSwitches_ = 0;
+    long long dbgGuideAssignments_ = 0;
+public:
+    long long dbgGuideSwitches() const { return dbgGuideSwitches_; }
+    long long dbgGuideAssignments() const { return dbgGuideAssignments_; }
+private:
 };
 
 } // namespace pps
