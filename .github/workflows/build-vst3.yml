@@ -12,7 +12,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure (MSVC, Release, SDK via FetchContent)
-        run: cmake -B build -S PrecisionPitchShift -DPPS_VST3_SDK_TAG="v3.7.14_build_55"
+        run: cmake -B build -S . -DPPS_VST3_SDK_TAG="v3.7.14_build_55"
 
       - name: Build plugin + tests
         run: cmake --build build --config Release
