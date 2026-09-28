@@ -14,13 +14,13 @@ BEGIN_FACTORY_DEF(PPS_VENDOR, PPS_URL, PPS_EMAIL)
 DEF_CLASS2(INLINE_UID_FROM_FUID(pps::kProcessorUID),
            PClassInfo::kManyInstances, kVstAudioEffectClass,
            "PrecisionPitchShift", Vst::kDistributable,
-           "Fx|Pitch Shift", "1.0.0", kVstVersionString,
+           "Fx|Pitch Shift", "1.0.2", kVstVersionString,
            pps::Processor::createInstance)
 
 //--- Edit controller ------------------------------------------------
 DEF_CLASS2(INLINE_UID_FROM_FUID(pps::kControllerUID),
            PClassInfo::kManyInstances, kVstComponentControllerClass,
-           "PrecisionPitchShiftController", 0, "", "1.0.0",
+           "PrecisionPitchShiftController", 0, "", "1.0.2",
            kVstVersionString, pps::Controller::createInstance)
 
 END_FACTORY

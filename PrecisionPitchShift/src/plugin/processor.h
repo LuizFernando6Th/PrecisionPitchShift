@@ -11,10 +11,10 @@
 namespace pps {
 
 // Class IDs (stable — do not change after release).
-static const Steinberg::FUID kProcessorUID(0x9A4B7C1D, 0x3F2E4A5B, 0x8C6D5E4F,
-                                           0x1A2B3C4D);
-static const Steinberg::FUID kControllerUID(0x7D8E9F0A, 0x1B2C3D4E, 0x5F6A7B8C,
-                                            0x9D0E1F2A);
+static const Steinberg::FUID kProcessorUID(0xA14C7E21, 0x5D3B49F2, 0x8176C0AA,
+                                           0x2E5D91B7);
+static const Steinberg::FUID kControllerUID(0xC27F8A13, 0x6E41B5D9, 0x934A7C20,
+                                             0xD18F56BE);
 
 class Processor : public Steinberg::Vst::AudioEffect {
 public:

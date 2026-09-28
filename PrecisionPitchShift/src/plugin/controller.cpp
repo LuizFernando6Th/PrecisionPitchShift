@@ -1,4 +1,4 @@
-// PrecisionPitchShift — VST3 controller implementation.
+// PrecisionPitchShift — VST3 controller implementation (v1.0.2).
 #include "controller.h"
 
 #include "parameters.h"
@@ -29,28 +29,30 @@ tresult PLUGIN_API Controller::initialize(FUnknown* context) {
     // sozinho — incluir unidade no texto duplica ("440,00 Hz Hz").
     parameters.addParameter(
         new RangeParameter(STR16("Frequencia de Origem"), params::kSourceFreq, STR16("Hz"),
-                           params::freqToNorm(params::kFreqMin),
-                           params::freqToNorm(params::kFreqMax),
-                           params::freqToNorm(params::kSourceDefault), 0,
-                           0, kRootUnitId));
+                           params::kFreqMin,
+                           params::kFreqMax,
+                           params::kSourceDefault, 0,
+                           ParameterInfo::kCanAutomate, kRootUnitId,
+                           STR16("Origem")));
 
     parameters.addParameter(
         new RangeParameter(STR16("Frequencia de Destino"), params::kTargetFreq, STR16("Hz"),
-                           params::freqToNorm(params::kFreqMin),
-                           params::freqToNorm(params::kFreqMax),
-                           params::freqToNorm(params::kTargetDefault), 0,
-                           0, kRootUnitId));
+                           params::kFreqMin,
+                           params::kFreqMax,
+                           params::kTargetDefault, 0,
+                           ParameterInfo::kCanAutomate, kRootUnitId,
+                           STR16("Destino")));
 
     RangeParameter* factorInfo = new RangeParameter(
-        STR16("Fator de Tom"), params::kFactorInfo, STR16("x"), 0.0, 1.0,
-        params::factorToNorm(params::factor(params::kSourceDefault,
-                                            params::kTargetDefault)),
+        STR16("Fator de Tom"), params::kFactorInfo, STR16("x"), 0.1, 10.0,
+        params::factor(params::kSourceDefault, params::kTargetDefault),
         0, ParameterInfo::kIsReadOnly, kRootUnitId);
     parameters.addParameter(factorInfo);
 
     auto* qualityParam = new StringListParameter(
         STR16("Processamento"), params::kQuality, nullptr,
-        ParameterInfo::kIsList, kRootUnitId);
+        ParameterInfo::kCanAutomate | ParameterInfo::kIsList, kRootUnitId,
+        STR16("Qualidade"));
     {
         String128 s;
         UString(s, 128).fromAscii("Alta Precisao");
@@ -60,26 +62,30 @@ tresult PLUGIN_API Controller::initialize(FUnknown* context) {
     }
     parameters.addParameter(qualityParam);
 
-    // stepCount 1 = discreto {0,1}: o host mostra seletor em vez de slider
-    // contínuo (o Bypass, também binário, já aparece como caixinha).
+    // User-editable parameters are explicitly automatable so generic VST3
+    // editors can expose them as controls.
     parameters.addParameter(
         new RangeParameter(STR16("Protecao de Ganho Automatica"), params::kAutoGain, nullptr,
-                           0.0, 1.0, 0.0, 1, 0,
-                           kRootUnitId));
+                           0.0, 1.0, 0.0, 1, ParameterInfo::kCanAutomate,
+                           kRootUnitId, STR16("Auto Gain")));
 
     parameters.addParameter(
         new RangeParameter(STR16("Teto"), params::kCeilingDb, STR16("dBFS"),
-                           params::ceilingToNorm(params::kCeilingMinDb),
-                           params::ceilingToNorm(params::kCeilingMaxDb),
-                           params::ceilingToNorm(params::kCeilingDefaultDb), 0,
-                           0, kRootUnitId));
+                           params::kCeilingMinDb,
+                           params::kCeilingMaxDb,
+                           params::kCeilingDefaultDb, 0,
+                           ParameterInfo::kCanAutomate, kRootUnitId,
+                           STR16("Ceiling")));
 
     parameters.addParameter(
         STR16("Bypass"), nullptr, 1, 0,
         ParameterInfo::kCanAutomate | ParameterInfo::kIsBypass,
         params::kBypassId);
 
-    return kResultOk;
+    // Expected public parameter table: source, target, factor, quality,
+    // autogain, ceiling and bypass. Keep this deterministic so hosts cannot
+    // encounter a partially registered parameter set.
+    return parameters.getParameterCount() == 7 ? kResultOk : kResultFalse;
 }
 
 tresult PLUGIN_API Controller::terminate() { return EditController::terminate(); }
