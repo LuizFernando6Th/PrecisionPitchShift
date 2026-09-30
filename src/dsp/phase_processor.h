@@ -116,4 +116,36 @@ void propagateFrame(const double* anaMag, const double* anaPhase,
                     bool phaseLock, std::vector<double>& cosT,
                     std::vector<double>& sinT);
 
+
+// ===== PATCH: shared-rotation phase model ================================
+// out_phase[c][k] = analysis_phase_interp[c][k] + rot[k]   (rot shared by all channels)
+struct SharedRotation {
+    std::vector<double> rot, rotNew;
+    std::vector<double> rate, rateNew;
+    std::vector<char> rateValid, rateValidNew;
+    std::vector<int> guide;
+    std::vector<double> prevMagRef;
+    std::vector<char> anchored;
+    std::vector<std::size_t> peaks;
+    std::size_t peakCount = 0;
+    std::size_t anchoredBins = 0;
+    bool initialized = false;
+    void resize(std::size_t nb) {
+        rot.assign(nb, 0.0); rotNew.assign(nb, 0.0);
+        rate.assign(nb, 0.0); rateNew.assign(nb, 0.0);
+        rateValid.assign(nb, 0); rateValidNew.assign(nb, 0);
+        guide.assign(nb, -1); prevMagRef.assign(nb, 0.0);
+        anchored.assign(nb, 0); peaks.assign((nb + 1) / 2, 0);
+        peakCount = 0; anchoredBins = 0; initialized = false;
+    }
+    void reset() { resize(rot.size()); }
+};
+void mapSpectrum(const double* anaMag, const double* anaPhase, const double* guard,
+                 std::size_t numBins, std::size_t fftSize, double factor,
+                 double* outMag, double* outPhase,
+                 std::vector<double>& cosT, std::vector<double>& sinT);
+void updateSharedRotation(const double* magRef, const double* trueRef,
+                          const double* outMagRef, std::size_t numBins,
+                          double factor, int hop, bool crestFire, SharedRotation& st);
+
 } // namespace pps

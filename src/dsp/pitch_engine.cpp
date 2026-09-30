@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace pps {
 
@@ -55,6 +56,11 @@ bool PitchEngine::configure(const EngineConfig& cfg) {
     consumed_ = 0;
     drained_ = 0;
     const std::size_t nb = fftSize_ / 2 + 1;
+    // Production path: shared rotation ON by default (EngineConfig::
+    // sharedRotation). The PPS_ROT prototype environment flag is gone:
+    // plugins have no environment to read.
+    rotMode_ = cfg.sharedRotation;
+    shared_.resize(nb); magRef_.assign(nb,0.0); trueRef_.assign(nb,0.0); outMagRef_.assign(nb,0.0);
     for (auto& ch : channels_) {
         const std::size_t fifoCapacity = fftSize_ + maxBlockSize_ + static_cast<std::size_t>(hop_) + 16;
         ch.inFifo.prepare(fifoCapacity);
@@ -79,6 +85,7 @@ bool PitchEngine::configure(const EngineConfig& cfg) {
 }
 
 void PitchEngine::reset() {
+    shared_.reset();
     consumed_ = 0;
     drained_ = 0;
     for (auto& ch : channels_) {
@@ -131,6 +138,54 @@ void PitchEngine::processBlock(const double* const* in, double** out, int numSam
         }
         const bool crestFire = crestMax > cfg_.crestThreshold;
 
+        if (rotMode_) {
+            for (auto& ch : channels_) {
+                ch.inFifo.popN(static_cast<std::size_t>(hop_));
+                for (std::size_t k = 0; k < nb; ++k) {
+                    ch.magA[k] = std::abs(ch.specA[k]);
+                    ch.phaA[k] = std::arg(ch.specA[k]);
+                }
+                if (!ch.phase.initialized) {
+                    for (std::size_t k = 0; k < nb; ++k)
+                        ch.trueF[k] = kTwoPi * static_cast<double>(k) / static_cast<double>(fftSize_);
+                } else {
+                    estimateTrueFrequencies(ch.phaA.data(), ch.phase.prevAnalysis.data(),
+                                            ch.trueF.data(), nb, fftSize_, hop_);
+                }
+                mapSpectrum(ch.magA.data(), ch.phaA.data(), guard_.data(), nb, fftSize_,
+                            factor_, ch.magS.data(), ch.phaS.data(), ch.scratch, ch.scratch2);
+            }
+            for (std::size_t j = 0; j < nb; ++j) {
+                double e = 0.0, bm = -1.0; std::size_t bc = 0, ci = 0;
+                for (auto& ch : channels_) { const double m = ch.magA[j]; e += m * m; if (m > bm) { bm = m; bc = ci; } ++ci; }
+                magRef_[j] = std::sqrt(e);
+                trueRef_[j] = channels_[bc].trueF[j];
+                double eo = 0.0;
+                for (auto& ch : channels_) eo += ch.magS[j] * ch.magS[j];
+                outMagRef_[j] = std::sqrt(eo);
+            }
+            updateSharedRotation(magRef_.data(), trueRef_.data(), outMagRef_.data(), nb,
+                                 factor_, hop_, crestFire, shared_);
+            for (auto& ch : channels_) {
+                for (std::size_t k = 0; k < nb; ++k) {
+                    if (k == 0 || k == nb - 1)
+                        ch.specS[k] = std::complex<double>(ch.magS[k], 0.0);
+                    else
+                        ch.specS[k] = std::polar(ch.magS[k], ch.phaS[k] + shared_.rot[k]);
+                }
+                rifft(ch.specS.data(), ch.synthFrame.data(), fftSize_, ch.work);
+                for (std::size_t i = 0; i < fftSize_; ++i)
+                    ch.ola[i] += ch.synthFrame[i] * window_[i] * olaGain_;
+                for (int i = 0; i < hop_; ++i)
+                    (void)ch.outFifo.push(ch.ola[static_cast<std::size_t>(i)]);
+                std::move(ch.ola.begin() + hop_, ch.ola.end(), ch.ola.begin());
+                std::fill(ch.ola.end() - hop_, ch.ola.end(), 0.0);
+                ch.phase.prevAnalysis = ch.phaA;
+                ch.phase.initialized = true;
+            }
+            ++dbgFrames_;
+            continue;
+        }
         for (auto& ch : channels_) {
             ch.inFifo.popN(static_cast<std::size_t>(hop_));
             for (std::size_t k = 0; k < nb; ++k) {

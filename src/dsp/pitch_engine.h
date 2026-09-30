@@ -45,6 +45,14 @@ struct EngineConfig {
     std::size_t fftSizeOverride = 0;  // 0 = automatic per sample rate
     WindowType window = WindowType::Hann;
     std::size_t maxBlockSize = 8192; // host/CLI block ceiling; used for preallocation
+#ifdef PPS_LEGACY_PHASE
+    bool sharedRotation = false; // legacy path: independent phase propagation
+                                 // per channel (comparison only, NOT production)
+#else
+    bool sharedRotation = true;  // production default: output phase =
+                                 // reinterpolated analysis phase + ONE shared
+                                 // rotation R[k] for all channels
+#endif
 };
 
 std::size_t suggestedFftSize(double sampleRate, QualityMode q);
@@ -102,6 +110,9 @@ private:
     std::vector<double> window_;
     std::vector<double> guard_;
     std::vector<Channel> channels_;
+    SharedRotation shared_;
+    std::vector<double> magRef_, trueRef_, outMagRef_;
+    bool rotMode_ = false;
     long long consumed_ = 0; // total input samples appended (all channels alike)
     long long drained_ = 0;  // total output samples released
     // Diagnostics (CLI --count-transients): frames processed, frames with
