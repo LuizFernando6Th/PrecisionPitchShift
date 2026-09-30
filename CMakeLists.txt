@@ -3,6 +3,7 @@
 # Targets:
 #   PrecisionPitchShift : VST3 plugin (needs the Steinberg VST3 SDK)
 #   pps_dsp_tests       : offline DSP unit/quality tests (no SDK needed)
+#   pps_regression_tests: gates locking the shared-rotation phase model (no SDK)
 #   pps_render          : offline WAV render CLI (no SDK needed, for tests)
 #
 # VST3 SDK resolution (in order):
@@ -24,7 +25,6 @@ option(PPS_BUILD_TESTS "Build DSP tests (no VST3 SDK required)" ON)
 option(PPS_BUILD_CLI "Build offline WAV render CLI (no VST3 SDK required)" ON)
 option(PPS_BUILD_VST3 "Build the VST3 plugin (requires VST3 SDK)" ON)
 option(PPS_WITH_VSTGUI "Build custom VSTGUI editor (else generic host UI)" OFF)
-option(PPS_LEGACY_PHASE "DSP: legacy independent phase propagation (comparison only, NOT production)" OFF)
 
 set(PPS_VST3_SDK_DIR "" CACHE PATH "Local VST3 SDK directory (takes precedence)")
 set(PPS_VST3_SDK_TAG "v3.7.14_build_55" CACHE STRING "VST3 SDK git tag when fetching")
@@ -40,9 +40,6 @@ set(PPS_DSP_SOURCES
 )
 add_library(pps_dsp STATIC ${PPS_DSP_SOURCES})
 target_include_directories(pps_dsp PUBLIC src)
-if(PPS_LEGACY_PHASE)
-    target_compile_definitions(pps_dsp PUBLIC PPS_LEGACY_PHASE)
-endif()
 if(MSVC)
     target_compile_options(pps_dsp PRIVATE /W4 /O2 /fp:precise)
 else()
@@ -68,6 +65,22 @@ if(PPS_BUILD_TESTS)
         target_compile_options(pps_dsp_tests PRIVATE -Wall -Wextra -O2)
     endif()
     add_test(NAME dsp_tests COMMAND pps_dsp_tests)
+
+    # Regression gates that lock the shared-rotation phase model (no audio
+    # files needed). The second test runs the SAME gates on the legacy engine
+    # and passes only if every gate detects it (guards against vacuous gates).
+    add_executable(pps_regression_tests tests/cpp/regression_tests.cpp)
+    target_link_libraries(pps_regression_tests PRIVATE pps_dsp)
+    if(MSVC)
+        target_compile_options(pps_regression_tests PRIVATE /W4 /O2 /fp:precise)
+    else()
+        target_compile_options(pps_regression_tests PRIVATE -Wall -Wextra -O2)
+    endif()
+    add_test(NAME regression_tests COMMAND pps_regression_tests)
+    add_test(NAME regression_tests_detect_legacy
+             COMMAND pps_regression_tests --expect-legacy-fails)
+    set_tests_properties(regression_tests regression_tests_detect_legacy
+                         PROPERTIES TIMEOUT 900)
 endif()
 
 if(PPS_BUILD_CLI)

@@ -13,6 +13,20 @@ realtime safety; it keeps the intended allocation boundary visible.
 
 ## Phase path
 
+Default path (`EngineConfig::sharedRotation = true`, what the plugin uses):
+shared-rotation phase model. Each channel keeps its own reinterpolated *analysis*
+phase and a single rotation `R[k]`, common to all channels, is advanced at
+`(factor - 1) * omega` and re-anchored on new energy / impulsive frames. The
+output phase therefore never drifts away from the analysis phase, and the
+inter-channel phase/level relations are inherited exactly. The twist sign is the
+same as in the legacy mapping (`kFixTwistSign = false`); there is no environment
+variable or build switch for any of this. `tests/cpp/regression_tests.cpp` locks
+the behaviour (see CHANGES.md for the measured numbers and known limitations).
+
+Legacy path (`sharedRotation = false`, kept only for A/B comparison in tests and
+`pps_render --shared-rotation off`; verified bit-identical to the previous engine
+on the 9 synthetic gate renders). The next two paragraphs describe this legacy path.
+
 Peak-rate locking now has temporal guide tracking with hysteresis. In addition,
 instantaneous-frequency phase advance uses trapezoidal integration between
 adjacent analysis frames (except exact factor=1 passthrough), reducing frame-rate
@@ -39,10 +53,15 @@ attenuated instead of folded back into the band.
 
 ## Validation
 
-The current local C++ suite reports 34/34 passing tests. The same suite was also
-run under AddressSanitizer and UndefinedBehaviorSanitizer with no reported memory
-or undefined-behaviour errors.
+The local C++ suite (`ctest`) runs three tests: `dsp_tests` (34/34),
+`regression_tests` (14/14: five gates that lock the shared-rotation model plus
+contract tests) and `regression_tests_detect_legacy` (5/5: the same gates run on
+the legacy engine must all fail, which proves they are not vacuous). All three
+were also run under AddressSanitizer and UndefinedBehaviorSanitizer with no
+reported memory or undefined-behaviour errors.
 
-The final VST3 bundle was not link-tested on this Linux environment because the
-Steinberg VST3 SDK is not installed locally and external network access is not
-available to fetch it. The source/CMake path remains configured for SDK 3.7.14.
+The VST3 target was built on Linux (GCC 13, SDK `v3.7.14_build_55` via
+FetchContent) and passed the Steinberg validator (47 tests passed, 0 failed).
+The Windows/MSVC build is done by the CI workflow and was not run locally; no
+host (e.g. Audacity) test has been run by the author of this revision. See
+CHANGES.md for measured numbers, known limitations and what is not verified.
