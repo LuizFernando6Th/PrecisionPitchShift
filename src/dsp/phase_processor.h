@@ -117,8 +117,17 @@ void propagateFrame(const double* anaMag, const double* anaPhase,
                     std::vector<double>& sinT);
 
 
-// ===== PATCH: shared-rotation phase model ================================
+// ===== Shared-rotation phase model (default engine path) ==================
 // out_phase[c][k] = analysis_phase_interp[c][k] + rot[k]   (rot shared by all channels)
+//
+// Why: the legacy model (propagateFrame above) makes the output phase the
+// integral of estimated frequencies, with no feedback from the analysis phase
+// and independently per channel. Any estimation error accumulates, partials
+// lose level through incoherent overlap-add, and L/R phase relations drift.
+// Here every channel keeps its OWN reinterpolated analysis phase (so
+// inter-channel phase/level relations are inherited exactly) and only the
+// small residual rotation (factor-1)*omega*hop is integrated, once, for all
+// channels. Bins are re-anchored (rot = 0) on new energy / impulsive frames.
 struct SharedRotation {
     std::vector<double> rot, rotNew;
     std::vector<double> rate, rateNew;
@@ -129,6 +138,7 @@ struct SharedRotation {
     std::vector<std::size_t> peaks;
     std::size_t peakCount = 0;
     std::size_t anchoredBins = 0;
+    std::size_t guideSwitches = 0; // guide changes in the last frame (diagnostic)
     bool initialized = false;
     void resize(std::size_t nb) {
         rot.assign(nb, 0.0); rotNew.assign(nb, 0.0);
@@ -136,7 +146,7 @@ struct SharedRotation {
         rateValid.assign(nb, 0); rateValidNew.assign(nb, 0);
         guide.assign(nb, -1); prevMagRef.assign(nb, 0.0);
         anchored.assign(nb, 0); peaks.assign((nb + 1) / 2, 0);
-        peakCount = 0; anchoredBins = 0; initialized = false;
+        peakCount = 0; anchoredBins = 0; guideSwitches = 0; initialized = false;
     }
     void reset() { resize(rot.size()); }
 };
@@ -144,8 +154,12 @@ void mapSpectrum(const double* anaMag, const double* anaPhase, const double* gua
                  std::size_t numBins, std::size_t fftSize, double factor,
                  double* outMag, double* outPhase,
                  std::vector<double>& cosT, std::vector<double>& sinT);
+// phaseLock: same meaning as EngineConfig::phaseLock. true = non-anchored bins
+// follow the rate/rotation of the nearest tracked analysis peak; false = each
+// bin integrates its own estimated rate (no peak guide).
 void updateSharedRotation(const double* magRef, const double* trueRef,
                           const double* outMagRef, std::size_t numBins,
-                          double factor, int hop, bool crestFire, SharedRotation& st);
+                          double factor, int hop, bool crestFire, bool phaseLock,
+                          SharedRotation& st);
 
 } // namespace pps

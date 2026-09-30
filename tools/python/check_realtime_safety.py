@@ -31,17 +31,25 @@ def body(text: str, signature: str) -> str:
     raise RuntimeError(f"unterminated body: {signature}")
 
 
+# Functions that run on the audio thread (the shared-rotation path is the
+# default engine path, so mapSpectrum/updateSharedRotation are covered too).
 realtime = {
-    "src/dsp/pitch_engine.cpp": "void PitchEngine::processBlock",
-    "src/dsp/phase_processor.cpp": "void propagateFrame",
+    "src/dsp/pitch_engine.cpp": ["void PitchEngine::processBlock"],
+    "src/dsp/phase_processor.cpp": [
+        "void propagateFrame",
+        "void mapSpectrum",
+        "void updateSharedRotation",
+    ],
 }
 errors = []
 for path in CHECKS:
     rel = path.relative_to(ROOT).as_posix()
-    b = body(path.read_text(encoding="utf-8"), realtime[rel])
-    for token in FORBIDDEN:
-        if token in b:
-            errors.append(f"{rel}: realtime body contains {token}")
+    text = path.read_text(encoding="utf-8")
+    for signature in realtime[rel]:
+        b = body(text, signature)
+        for token in FORBIDDEN:
+            if token in b:
+                errors.append(f"{rel}: {signature} contains {token}")
 
 if errors:
     for e in errors:

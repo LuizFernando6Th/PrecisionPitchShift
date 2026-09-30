@@ -5,6 +5,9 @@
 //   pps_render --in in.wav --out out.wav --source 440 --target 444
 //              [--quality high|efficient] [--autogain on|off] (default off; offline on is global two-pass)
 //              [--ceiling-db -1.0] [--block 512]
+//              [--shared-rotation on|off] (default on = production phase model;
+//                                          off = legacy per-channel integrator,
+//                                          for A/B comparison only)
 //
 // No resampling is performed: out sample rate == in sample rate, always.
 #include <cmath>
@@ -29,6 +32,7 @@ struct Args {
     bool autogain = false;
     double ceilingDb = -1.0;
     bool phaselock = true; // default ON (measured best); --phaselock off to compare
+    bool sharedRotation = true; // production phase model; --shared-rotation off = legacy
     int block = 512;
     int depth = 32;
     int fft = 0;
@@ -64,6 +68,12 @@ bool parse(int argc, char** argv, Args& a) {
             if (!need(v)) return false;
             a.phaselock = (v == "on" || v == "1" || v == "true");
         }
+        else if (k == "--shared-rotation") {
+            if (!need(v)) return false;
+            if (v == "on" || v == "1" || v == "true") a.sharedRotation = true;
+            else if (v == "off" || v == "0" || v == "false") a.sharedRotation = false;
+            else return false;
+        }
         else if (k == "--block") { if (!need(v)) return false; a.block = std::stoi(v); }
         else if (k == "--depth") { if (!need(v)) return false; a.depth = std::stoi(v); }
         else if (k == "--fft") { if (!need(v)) return false; a.fft = std::stoi(v); }
@@ -94,7 +104,7 @@ int main(int argc, char** argv) {
                      "usage: pps_render --in in.wav --out out.wav --source X --target Y "
                      "[--quality high|efficient] [--autogain on|off] (default off; offline on is global two-pass) [--ceiling-db DB] "
                      "[--block N] [--depth 16|24|32] [--fft N] [--window hann|bh] "
-                     "[--phaselock on|off]\n"
+                     "[--phaselock on|off] [--shared-rotation on|off]\n"
                      "   or: pps_render --in in.wav --dump-bins k0,k1 --dump-frames N "
                      "--dump-out d.csv (analysis diagnostic)\n");
         return 2;
@@ -184,6 +194,7 @@ int main(int argc, char** argv) {
     cfg.quality = (a.quality == "efficient") ? pps::QualityMode::Efficient
                                             : pps::QualityMode::HighPrecision;
     cfg.phaseLock = a.phaselock;
+    cfg.sharedRotation = a.sharedRotation;
     cfg.fftSizeOverride = a.fft > 0 ? static_cast<std::size_t>(a.fft) : 0;
     cfg.window = (a.window == "bh" || a.window == "blackmanharris")
                      ? pps::WindowType::BlackmanHarris

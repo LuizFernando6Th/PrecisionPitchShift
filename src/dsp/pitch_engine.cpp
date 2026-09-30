@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 
 namespace pps {
 
@@ -56,9 +55,8 @@ bool PitchEngine::configure(const EngineConfig& cfg) {
     consumed_ = 0;
     drained_ = 0;
     const std::size_t nb = fftSize_ / 2 + 1;
-    // Production path: shared rotation ON by default (EngineConfig::
-    // sharedRotation). The PPS_ROT prototype environment flag is gone:
-    // plugins have no environment to read.
+    // Phase model comes ONLY from the explicit configuration field
+    // (default: shared rotation). No environment variables, no build switch.
     rotMode_ = cfg.sharedRotation;
     shared_.resize(nb); magRef_.assign(nb,0.0); trueRef_.assign(nb,0.0); outMagRef_.assign(nb,0.0);
     for (auto& ch : channels_) {
@@ -165,7 +163,7 @@ void PitchEngine::processBlock(const double* const* in, double** out, int numSam
                 outMagRef_[j] = std::sqrt(eo);
             }
             updateSharedRotation(magRef_.data(), trueRef_.data(), outMagRef_.data(), nb,
-                                 factor_, hop_, crestFire, shared_);
+                                 factor_, hop_, crestFire, cfg_.phaseLock, shared_);
             for (auto& ch : channels_) {
                 for (std::size_t k = 0; k < nb; ++k) {
                     if (k == 0 || k == nb - 1)
@@ -182,6 +180,12 @@ void PitchEngine::processBlock(const double* const* in, double** out, int numSam
                 std::fill(ch.ola.end() - hop_, ch.ola.end(), 0.0);
                 ch.phase.prevAnalysis = ch.phaA;
                 ch.phase.initialized = true;
+                // Diagnostics (pps_render --count-transients), same per-channel
+                // accounting as the legacy path below.
+                dbgAnchoredBins_ += static_cast<long long>(shared_.anchoredBins);
+                dbgTotalBins_ += static_cast<long long>(nb);
+                dbgGuideSwitches_ += static_cast<long long>(shared_.guideSwitches);
+                dbgGuideAssignments_ += static_cast<long long>(nb);
             }
             ++dbgFrames_;
             continue;

@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cassert>
 #include <algorithm>
-#include <cstdlib>
 
 namespace pps {
 
@@ -238,13 +237,17 @@ void propagateFrame(const double* anaMag, const double* anaPhase,
 }
 
 
-// ===== Shared-rotation phase model (production) ============================
-// NOTE on the twist sign: with an FFT using e^{-j} convention the Dirichlet
-// kernel requires the NEGATIVE twist plus an e^{-jk(1-1/f)} recentering, but
-// that sign correction was validated ONLY on synthetic impulses/sweeps, NOT
-// on music. It therefore stays OFF: flip kFixTwistSign to true only after
-// re-validating the full gate battery on music. There is intentionally NO
-// environment-variable switch (plugins have no environment to read).
+// ===== Shared-rotation phase model (default engine path) ==================
+// NOTE on the twist sign: with an FFT using the e^{-j} convention, the Dirichlet
+// kernel requires the NEGATIVE twist plus an e^{-jk(1-1/f)} recentering. That
+// correction was confirmed on synthetic clicks/tone bursts and on the kernel
+// itself, but its absolute effect on the content delay of REAL MUSIC did not
+// close (envelope-lag on the test track: +36/+44 samples with rotation alone,
+// -35/-30 with rotation + corrected twist), so it stays OFF and this path uses
+// exactly the same twist as the legacy mapping in propagateFrame. Flip
+// kFixTwistSign only after re-validating the full gate battery on music.
+// There is intentionally NO environment-variable switch (a plugin has no
+// environment to read); tests lock the OFF state.
 static constexpr bool kFixTwistSign = false;
 void mapSpectrum(const double* anaMag, const double* anaPhase, const double* guard,
                  std::size_t numBins, std::size_t fftSize, double factor,
@@ -291,7 +294,8 @@ void mapSpectrum(const double* anaMag, const double* anaPhase, const double* gua
 
 void updateSharedRotation(const double* magRef, const double* trueRef,
                           const double* outMagRef, std::size_t numBins,
-                          double factor, int hop, bool crestFire, SharedRotation& st) {
+                          double factor, int hop, bool crestFire, bool phaseLock,
+                          SharedRotation& st) {
     const double invFactor = 1.0 / factor;
     const double hd = static_cast<double>(hop);
     const double lastBin = static_cast<double>(numBins - 1);
@@ -301,9 +305,12 @@ void updateSharedRotation(const double* magRef, const double* trueRef,
     const double absFloor = framePeak * kAbsFloorRel;
     std::fill(st.anchored.begin(), st.anchored.end(), 0);
     st.anchoredBins = 0;
-    // 1) analysis peaks (same rule as the original lock block) on the channel-power-sum magnitude
+    st.guideSwitches = 0;
+    // 1) analysis peaks (same rule as the original lock block) on the channel-power-sum magnitude.
+    // With phaseLock off no peak is searched, so every non-anchored bin falls
+    // through to the "own rate" branch below (mirrors propagateFrame's !lockActive).
     st.peakCount = 0;
-    for (std::size_t k = 1; k + 1 < numBins; ++k) {
+    for (std::size_t k = 1; phaseLock && k + 1 < numBins; ++k) {
         if (!(magRef[k] >= magRef[k - 1] && magRef[k] > magRef[k + 1])) continue;
         if (magRef[k] <= 1e-9) continue;
         double vmin = magRef[k];
@@ -359,6 +366,7 @@ void updateSharedRotation(const double* magRef, const double* trueRef,
             if (trackedMove <= kTrackMaxBins && trackedD <= bestD + kSwitchMarginBins &&
                 magRef[tracked] >= kKeepMinMagRatio * magRef[best]) g = tracked;
         }
+        if (previous >= 0 && g != static_cast<std::size_t>(previous)) ++st.guideSwitches;
         st.guide[k] = static_cast<int>(g);
         // rotation of the guide's OUTPUT bin (previous frame) advanced by (f-1)*omega_guide*hop
         std::size_t kg = static_cast<std::size_t>(static_cast<double>(g) * factor + 0.5);
